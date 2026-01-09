@@ -41,6 +41,10 @@ async def lifespan(app: FastAPI):
         scheduler_service = get_scheduler_service()
         scheduler_service.start()
         logger.info("scheduler_auto_started")
+        
+        # Auto-seed content on startup (handles ephemeral filesystem)
+        import asyncio
+        asyncio.create_task(_auto_seed_on_startup())
     
     yield
     
@@ -50,6 +54,52 @@ async def lifespan(app: FastAPI):
         scheduler_service.stop()
     
     logger.info("app_shutdown")
+
+
+async def _auto_seed_on_startup():
+    """
+    Auto-seed content when the app starts.
+    
+    Handles Render's ephemeral filesystem by:
+    1. Running ingestion to fetch fresh content
+    2. Running indexer to generate indices
+    3. Uploading to Supabase Storage
+    
+    This runs in the background so it doesn't block startup.
+    """
+    import asyncio
+    from pathlib import Path
+    
+    # Wait a bit for app to fully start
+    await asyncio.sleep(5)
+    
+    indexes_dir = Path("indexes")
+    master_content = indexes_dir / "master_content.json"
+    
+    # Only seed if master_content.json is missing (fresh deploy)
+    if not master_content.exists():
+        print("\n" + "="*60)
+        print("[AUTO-SEED] 🚀 Fresh deploy detected - seeding content...")
+        print("="*60)
+        
+        try:
+            scheduler_service = get_scheduler_service()
+            
+            # Step 1: Ingestion
+            print("[AUTO-SEED] Step 1/2: Running ingestion...")
+            await scheduler_service.trigger_ingestion_now()
+            
+            # Step 2: Indexer + Upload
+            print("[AUTO-SEED] Step 2/2: Running indexer + upload...")
+            await scheduler_service.trigger_indexer_now()
+            
+            print("[AUTO-SEED] ✅ Auto-seed complete!")
+            print("="*60 + "\n")
+            
+        except Exception as e:
+            print(f"[AUTO-SEED] ❌ Error during auto-seed: {e}")
+    else:
+        print(f"[AUTO-SEED] ✓ Content already exists, skipping auto-seed")
 
 
 # Create FastAPI app
