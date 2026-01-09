@@ -1,0 +1,111 @@
+"""
+Feed Item Models
+
+Defines the unified feed item schema for both indexing (lightweight)
+and hydration (full metadata).
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import List, Optional
+from pydantic import BaseModel, Field
+
+
+class ContentType(str, Enum):
+    """Content type categories."""
+    TRAILER = "trailer"
+    TEASER = "teaser"
+    CLIP = "clip"
+    BTS = "bts"
+    INTERVIEW = "interview"
+    FEATURETTE = "featurette"
+    SHORT = "short"
+    COMMUNITY = "community"
+
+
+class VideoType(str, Enum):
+    """Video source type."""
+    YOUTUBE = "youtube"
+    EXTERNAL = "external"
+
+
+class IndexItem(BaseModel):
+    """
+    Lightweight item for index storage.
+    
+    Used in genre_*.json and global_trending.json files.
+    Memory-efficient: only stores what's needed for selection.
+    """
+    id: str = Field(..., description="Unique item ID (YouTube video ID or internal)")
+    score: float = Field(..., description="Pre-calculated relevance score (0-100)")
+    tags: List[str] = Field(default_factory=list, description="Genre/content tags")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When item was indexed")
+    tmdb_id: Optional[int] = Field(None, alias="tmdbId", description="TMDB ID if linked")
+    media_type: Optional[str] = Field(None, alias="mediaType", description="movie or tv")
+    
+    class Config:
+        populate_by_name = True
+
+
+class FeedItem(BaseModel):
+    """
+    Full feed item returned to client after hydration.
+    
+    Contains all metadata needed for display in the mobile app.
+    """
+    id: str = Field(..., description="Unique item ID")
+    tmdb_id: Optional[int] = Field(None, alias="tmdbId")
+    media_type: str = Field(default="movie", alias="mediaType")
+    
+    # Display metadata
+    title: str = Field(..., description="Content title")
+    overview: Optional[str] = Field(None, description="Description/synopsis")
+    poster_path: Optional[str] = Field(None, alias="posterPath")
+    backdrop_path: Optional[str] = Field(None, alias="backdropPath")
+    
+    # Video data
+    youtube_key: str = Field(..., alias="youtubeKey", description="YouTube video ID")
+    video_type: VideoType = Field(default=VideoType.YOUTUBE, alias="videoType")
+    content_type: ContentType = Field(default=ContentType.TRAILER, alias="contentType")
+    duration: Optional[int] = Field(None, description="Video duration in seconds")
+    
+    # Metadata
+    source: str = Field(default="trending", description="trending, genre, friend, community")
+    reason: Optional[str] = Field(None, description="Why this was recommended")
+    genres: List[str] = Field(default_factory=list)
+    popularity: float = Field(default=0.0)
+    vote_average: Optional[float] = Field(None, alias="voteAverage")
+    release_date: Optional[str] = Field(None, alias="releaseDate")
+    
+    # Tracking
+    score: float = Field(default=0.0, description="Ranking score (internal)")
+    freshness: Optional[str] = Field(None, description="new, fresh, standard")
+    
+    class Config:
+        populate_by_name = True
+        use_enum_values = True
+
+
+class ContentDictionary(BaseModel):
+    """
+    Master content dictionary entry.
+    
+    Stored in Supabase for hydration lookups.
+    """
+    id: str
+    tmdb_id: Optional[int] = Field(None, alias="tmdbId")
+    media_type: str = Field(default="movie", alias="mediaType")
+    title: str
+    overview: Optional[str] = None
+    poster_path: Optional[str] = Field(None, alias="posterPath")
+    backdrop_path: Optional[str] = Field(None, alias="backdropPath")
+    youtube_key: str = Field(..., alias="youtubeKey")
+    video_type: str = Field(default="trailer", alias="videoType")
+    genres: List[str] = Field(default_factory=list)
+    popularity: float = Field(default=0.0)
+    vote_average: Optional[float] = Field(None, alias="voteAverage")
+    release_date: Optional[str] = Field(None, alias="releaseDate")
+    indexed_at: datetime = Field(default_factory=datetime.utcnow, alias="indexedAt")
+    
+    class Config:
+        populate_by_name = True

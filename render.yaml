@@ -1,0 +1,36 @@
+# Render Configuration
+# https://render.com
+
+services:
+  - type: web
+    name: finishd-feed-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: FIREBASE_CREDENTIALS_PATH
+        value: /app/service-account.json
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: TMDB_API_KEY
+        sync: false
+      - key: TMDB_READ_ACCESS_TOKEN
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: finishd-redis
+          property: connectionString
+    healthCheckPath: /health
+    autoDeploy: true
+    plan: starter
+
+  - type: redis
+    name: finishd-redis
+    plan: starter
+    ipAllowList: []
