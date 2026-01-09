@@ -9,8 +9,8 @@ instead of the YouTube Data API (costly).
 """
 
 import asyncio
-from datetime import datetime
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any
 import httpx
 import xml.etree.ElementTree as ET
 
@@ -21,6 +21,23 @@ from ..services.quota_manager import QuotaManager
 logger = get_logger(__name__)
 settings = get_settings()
 
+
+# TMDB Image Base URLs (matching legacy backend)
+TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w500"
+TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/original"
+
+# Genre ID to Name mapping (matching legacy backend)
+GENRE_ID_TO_NAME = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
+    80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
+    14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
+    9648: "Mystery", 10749: "Romance", 878: "Sci-Fi", 10770: "TV Movie",
+    53: "Thriller", 10752: "War", 37: "Western",
+    # TV genres
+    10759: "Action & Adventure", 10762: "Kids", 10763: "News",
+    10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap",
+    10767: "Talk", 10768: "War & Politics",
+}
 
 # YouTube channels to monitor
 YOUTUBE_CHANNELS = [
@@ -83,18 +100,54 @@ class IngestionJob:
             logger.warning("youtube_rss_failed", channel=channel_id, error=str(e))
             return []
     
+    async def fetch_tmdb_video_key(self, tmdb_id: int, media_type: str, client: httpx.AsyncClient) -> Optional[str]:
+        """
+        Fetch YouTube video key (trailer) for a movie/TV show from TMDB.
+        
+        TMDB API: /movie/{id}/videos or /tv/{id}/videos
+        Returns the first YouTube trailer/teaser key, or None if not found.
+        """
+        try:
+            endpoint = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/videos"
+            response = await client.get(
+                endpoint,
+                params={"api_key": settings.tmdb_api_key},
+                timeout=5.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                
+                # Priority: Trailer > Teaser > Any YouTube video
+                for video_type in ["Trailer", "Teaser"]:
+                    for video in results:
+                        if video.get("site") == "YouTube" and video.get("type") == video_type:
+                            return video.get("key")
+                
+                # Fallback: any YouTube video
+                for video in results:
+                    if video.get("site") == "YouTube":
+                        return video.get("key")
+                        
+        except Exception as e:
+            logger.debug("tmdb_video_fetch_failed", tmdb_id=tmdb_id, error=str(e))
+        
+        return None
+    
     async def fetch_tmdb_trending(self) -> List[dict]:
         """
-        Fetch trending content from TMDB.
+        Fetch trending content from TMDB with YouTube trailer keys.
         
-        Consumes 1 quota unit per request.
+        Fetches trending movies/TV and then gets YouTube video keys for each.
+        Normalizes items to match legacy backend format.
         """
         if not settings.tmdb_api_key:
             logger.warning("tmdb_api_key_not_set")
             return []
         
-        # Check quota before making request
-        await self.quota_manager.require_quota("tmdb", cost=2)
+        # Check quota before making requests
+        await self.quota_manager.require_quota("tmdb", cost=22)  # 2 for trending + 20 for video lookups
         
         videos = []
         
@@ -107,20 +160,24 @@ class IngestionJob:
             )
             await self.quota_manager.record_usage("tmdb", cost=1)
             
+            movie_items = []
             if response.status_code == 200:
                 data = response.json()
-                for item in data.get("results", [])[:10]:
-                    videos.append({
-                        "tmdbId": item["id"],
-                        "mediaType": "movie",
-                        "title": item.get("title", "Unknown"),
-                        "overview": item.get("overview"),
-                        "posterPath": item.get("poster_path"),
-                        "backdropPath": item.get("backdrop_path"),
-                        "popularity": item.get("popularity", 0),
-                        "releaseDate": item.get("release_date"),
-                        "source": "tmdb_trending",
-                    })
+                movie_items = data.get("results", [])[:10]
+            
+            # Fetch video keys for movies
+            for item in movie_items:
+                tmdb_id = item["id"]
+                youtube_key = await self.fetch_tmdb_video_key(tmdb_id, "movie", client)
+                
+                # Skip items without YouTube video
+                if not youtube_key:
+                    logger.debug("tmdb_movie_no_trailer", tmdb_id=tmdb_id)
+                    continue
+                
+                normalized = self._normalize_tmdb_item(item, "movie", youtube_key)
+                videos.append(normalized)
+                logger.debug("tmdb_movie_processed", tmdb_id=tmdb_id, youtube_key=youtube_key)
             
             # Trending TV
             response = await client.get(
@@ -130,21 +187,163 @@ class IngestionJob:
             )
             await self.quota_manager.record_usage("tmdb", cost=1)
             
+            tv_items = []
             if response.status_code == 200:
                 data = response.json()
-                for item in data.get("results", [])[:10]:
-                    videos.append({
-                        "tmdbId": item["id"],
-                        "mediaType": "tv",
-                        "title": item.get("name", "Unknown"),
-                        "overview": item.get("overview"),
-                        "posterPath": item.get("poster_path"),
-                        "backdropPath": item.get("backdrop_path"),
-                        "popularity": item.get("popularity", 0),
-                        "releaseDate": item.get("first_air_date"),
-                        "source": "tmdb_trending",
-                    })
+                tv_items = data.get("results", [])[:10]
+            
+            # Fetch video keys for TV shows
+            for item in tv_items:
+                tmdb_id = item["id"]
+                youtube_key = await self.fetch_tmdb_video_key(tmdb_id, "tv", client)
+                
+                # Skip items without YouTube video
+                if not youtube_key:
+                    logger.debug("tmdb_tv_no_trailer", tmdb_id=tmdb_id)
+                    continue
+                
+                normalized = self._normalize_tmdb_item(item, "tv", youtube_key)
+                videos.append(normalized)
+                logger.debug("tmdb_tv_processed", tmdb_id=tmdb_id, youtube_key=youtube_key)
         
+        # Log summary
+        logger.info("tmdb_videos_fetched", total=len(videos))
+        
+        return videos
+    
+    def _normalize_tmdb_item(self, item: Dict[str, Any], media_type: str, youtube_key: str) -> Dict[str, Any]:
+        """
+        Normalize TMDB item to match legacy backend format.
+        
+        Args:
+            item: Raw TMDB item from API response
+            media_type: "movie" or "tv"
+            youtube_key: YouTube video key
+            
+        Returns:
+            Normalized feed item dict
+        """
+        tmdb_id = item.get("id")
+        
+        # Extract title (different field for movies vs TV)
+        title = item.get("title") or item.get("name") or "Unknown"
+        
+        # Build full poster/backdrop URLs
+        poster_path = item.get("poster_path")
+        backdrop_path = item.get("backdrop_path")
+        
+        poster = f"{TMDB_POSTER_BASE}{poster_path}" if poster_path else f"https://img.youtube.com/vi/{youtube_key}/hqdefault.jpg"
+        backdrop = f"{TMDB_BACKDROP_BASE}{backdrop_path}" if backdrop_path else None
+        
+        # Convert genre IDs to names
+        genre_ids = item.get("genre_ids", [])
+        genres = [GENRE_ID_TO_NAME.get(gid) for gid in genre_ids if gid in GENRE_ID_TO_NAME]
+        
+        # Release date
+        release_date = item.get("release_date") or item.get("first_air_date")
+        
+        now = datetime.now(timezone.utc).isoformat()
+        
+        return {
+            "id": youtube_key,  # Use YouTube key as primary ID
+            "youtubeKey": youtube_key,
+            "tmdbId": tmdb_id,
+            "mediaType": media_type,
+            "title": title,
+            "overview": item.get("overview", ""),
+            "poster": poster,
+            "posterPath": poster_path,
+            "backdrop": backdrop,
+            "backdropPath": backdrop_path,
+            "genres": genres,
+            "genreIds": genre_ids,
+            "popularity": item.get("popularity", 0),
+            "voteAverage": item.get("vote_average", 0),
+            "releaseDate": release_date,
+            "language": item.get("original_language", "en"),
+            "videoType": "trailer",
+            "source": "tmdb_trending",
+            "updatedAt": now,
+        }
+    
+    async def fetch_tmdb_discover_by_genre(self) -> List[dict]:
+        """
+        Fetch content from TMDB /discover endpoint for each major genre.
+        
+        This ensures we have content for all genre buckets, not just what's
+        trending. Fetches top 5 movies per genre.
+        """
+        if not settings.tmdb_api_key:
+            logger.warning("tmdb_api_key_not_set")
+            return []
+        
+        # Major genres to fetch (genre_id: genre_name)
+        GENRES_TO_FETCH = {
+            28: "action",
+            35: "comedy", 
+            18: "drama",
+            27: "horror",
+            53: "thriller",
+            10749: "romance",
+            878: "scifi",
+            14: "fantasy",
+            16: "animation",
+            99: "documentary",
+        }
+        
+        videos = []
+        seen_tmdb_ids = set()
+        
+        async with httpx.AsyncClient() as client:
+            for genre_id, genre_name in GENRES_TO_FETCH.items():
+                try:
+                    # Small delay to avoid rate limiting
+                    await asyncio.sleep(0.25)
+                    
+                    # Fetch discover movies for this genre
+                    response = await client.get(
+                        "https://api.themoviedb.org/3/discover/movie",
+                        params={
+                            "api_key": settings.tmdb_api_key,
+                            "with_genres": genre_id,
+                            "sort_by": "popularity.desc",
+                            "page": 1,
+                        },
+                        timeout=10.0
+                    )
+                    
+                    if response.status_code != 200:
+                        logger.warning("discover_fetch_failed", genre=genre_name, status=response.status_code)
+                        continue
+                    
+                    data = response.json()
+                    items = data.get("results", [])[:5]  # Top 5 per genre
+                    
+                    genre_count = 0
+                    for item in items:
+                        tmdb_id = item.get("id")
+                        
+                        # Skip if already processed
+                        if tmdb_id in seen_tmdb_ids:
+                            continue
+                        seen_tmdb_ids.add(tmdb_id)
+                        
+                        # Get YouTube trailer
+                        youtube_key = await self.fetch_tmdb_video_key(tmdb_id, "movie", client)
+                        if not youtube_key:
+                            continue
+                        
+                        normalized = self._normalize_tmdb_item(item, "movie", youtube_key)
+                        normalized["source"] = f"discover_{genre_name}"
+                        videos.append(normalized)
+                        genre_count += 1
+                    
+                    logger.info("discover_genre_fetched", genre=genre_name, count=genre_count)
+                    
+                except Exception as e:
+                    logger.warning("discover_genre_error", genre=genre_name, error=str(e))
+        
+        logger.info("discover_total_fetched", total=len(videos))
         return videos
     
     async def run(self):
@@ -153,27 +352,47 @@ class IngestionJob:
         
         1. Fetch from all YouTube channels (via RSS - free)
         2. Fetch TMDB trending
-        3. Merge and deduplicate
-        4. Save to master_content.json
+        3. Fetch TMDB discover by genre (for variety)
+        4. Merge and deduplicate
+        5. Save to master_content.json
         """
         logger.info("ingestion_job_started")
+        print("\n" + "="*60)
+        print("[Ingestion] 🚀 Starting content ingestion...")
+        print("="*60)
         start_time = datetime.utcnow()
         
         all_videos = []
         
         # YouTube RSS (free, no quota)
+        print("[Ingestion] 📺 Fetching YouTube RSS feeds...")
         for channel_id in YOUTUBE_CHANNELS:
             videos = await self.fetch_youtube_rss(channel_id)
             all_videos.extend(videos)
             logger.info("youtube_rss_fetched", channel=channel_id, count=len(videos))
+        print(f"[Ingestion] ✅ YouTube RSS: {len(all_videos)} videos from {len(YOUTUBE_CHANNELS)} channels")
         
         # TMDB trending (uses quota)
+        print("[Ingestion] 🎬 Fetching TMDB trending...")
         try:
             tmdb_videos = await self.fetch_tmdb_trending()
             all_videos.extend(tmdb_videos)
             logger.info("tmdb_fetched", count=len(tmdb_videos))
+            print(f"[Ingestion] ✅ TMDB Trending: {len(tmdb_videos)} videos with trailers")
         except Exception as e:
             logger.warning("tmdb_fetch_failed", error=str(e))
+            print(f"[Ingestion] ⚠️ TMDB Trending failed: {e}")
+        
+        # TMDB discover by genre (for variety)
+        print("[Ingestion] 🎭 Fetching TMDB discover by genre...")
+        try:
+            discover_videos = await self.fetch_tmdb_discover_by_genre()
+            all_videos.extend(discover_videos)
+            logger.info("discover_fetched", count=len(discover_videos))
+            print(f"[Ingestion] ✅ TMDB Discover: {len(discover_videos)} videos across 10 genres")
+        except Exception as e:
+            logger.warning("discover_fetch_failed", error=str(e))
+            print(f"[Ingestion] ⚠️ TMDB Discover failed: {e}")
         
         # Deduplicate by ID
         seen_ids = set()
