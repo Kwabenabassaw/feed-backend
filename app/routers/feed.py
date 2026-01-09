@@ -15,7 +15,7 @@ from slowapi.util import get_remote_address
 
 from ..config import get_settings
 from ..core.logging import get_logger
-from ..core.security import get_current_user, get_current_user_optional
+from ..core.security import get_current_user
 from ..models.response import FeedResponse, FeedMeta, FeedType
 from ..models.user import UserContext, UserPreferences
 from ..services.index_pool import IndexPoolService
@@ -52,7 +52,7 @@ def get_services():
     return _index_pool, _dedup_service, _generator, _hydrator
 
 
-async def load_user_context(user: Optional[dict]) -> UserContext:
+async def load_user_context(user: dict) -> UserContext:
     """
     Load full user context from Firestore.
     
@@ -61,18 +61,7 @@ async def load_user_context(user: Optional[dict]) -> UserContext:
     - Friend list
     - Seen history (for deduplication)
     - Favorites and watchlist (for personalization)
-    
-    For anonymous users, returns default context.
     """
-    if user is None:
-        # Return cold-start context for anonymous users
-        return UserContext(
-            user_id="anonymous",
-            preferences=UserPreferences(),
-            friend_ids=[],
-            seen_item_ids=set(),
-        )
-    
     firestore = get_firestore_service()
     return await firestore.load_user_context(user["uid"])
 
@@ -84,7 +73,7 @@ async def get_feed(
     feed_type: FeedType = Query(FeedType.FOR_YOU, description="Type of feed"),
     cursor: Optional[str] = Query(None, description="Pagination cursor"),
     limit: int = Query(10, ge=1, le=50, description="Number of items"),
-    current_user: Optional[dict] = Depends(get_current_user_optional)  # Optional auth
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Get personalized feed.
@@ -97,19 +86,14 @@ async def get_feed(
     5. Return response with next cursor
     
     Target latency: < 150ms
-    
-    Note: Works for both authenticated and anonymous users.
-    Anonymous users receive trending/cold-start content.
     """
     start_time = time.time()
     
     _, _, generator, hydrator = get_services()
     
-    user_id = current_user["uid"] if current_user else "anonymous"
-    
     logger.info(
         "feed_request",
-        uid=user_id,
+        uid=current_user["uid"],
         feed_type=feed_type.value,
         limit=limit,
         has_cursor=cursor is not None
