@@ -56,35 +56,56 @@ class SchedulerService:
         """Execute the ingestion job."""
         from ..jobs.ingestion import run_ingestion_job
         
+        print("\n" + "="*60)
+        print("[CRON JOB] 🔄 INGESTION JOB STARTED")
+        print(f"[CRON JOB] Time: {datetime.utcnow().isoformat()}")
+        print("="*60)
+        
         logger.info("scheduler_job_started", job="ingestion")
         try:
             await run_ingestion_job()
             logger.info("scheduler_job_completed", job="ingestion")
+            print("[CRON JOB] ✅ INGESTION JOB COMPLETED\n")
         except Exception as e:
             logger.error("scheduler_job_failed", job="ingestion", error=str(e))
+            print(f"[CRON JOB] ❌ INGESTION JOB FAILED: {e}\n")
     
     async def _run_indexer(self):
         """Execute the indexer job."""
         from ..jobs.indexer import run_indexer_job
         
+        print("\n" + "="*60)
+        print("[CRON JOB] 🔄 INDEXER JOB STARTED")
+        print(f"[CRON JOB] Time: {datetime.utcnow().isoformat()}")
+        print("="*60)
+        
         logger.info("scheduler_job_started", job="indexer")
         try:
             await run_indexer_job()
             logger.info("scheduler_job_completed", job="indexer")
+            print("[CRON JOB] ✅ INDEXER JOB COMPLETED\n")
         except Exception as e:
             logger.error("scheduler_job_failed", job="indexer", error=str(e))
+            print(f"[CRON JOB] ❌ INDEXER JOB FAILED: {e}\n")
     
     async def _run_upload(self):
         """Upload indices to Supabase after indexer runs."""
         from .supabase_storage import get_supabase_storage
         
+        print("\n" + "="*60)
+        print("[CRON JOB] 🔄 SUPABASE UPLOAD JOB STARTED")
+        print(f"[CRON JOB] Time: {datetime.utcnow().isoformat()}")
+        print("="*60)
+        
         logger.info("scheduler_job_started", job="supabase_upload")
         try:
             storage = get_supabase_storage()
-            await storage.upload_all_indices()
+            result = await storage.upload_all_indices()
             logger.info("scheduler_job_completed", job="supabase_upload")
+            print(f"[CRON JOB] ✅ SUPABASE UPLOAD COMPLETED: {result}\n")
         except Exception as e:
             logger.error("scheduler_job_failed", job="supabase_upload", error=str(e))
+            print(f"[CRON JOB] ❌ SUPABASE UPLOAD FAILED: {e}\n")
     
     def setup_jobs(self):
         """Configure and add all scheduled jobs."""

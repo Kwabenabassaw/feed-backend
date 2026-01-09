@@ -66,13 +66,19 @@ class SupabaseStorage:
         """
         if not self._is_configured():
             logger.warning("supabase_not_configured", action="upload")
+            print(f"[Supabase] ❌ Not configured - URL: {self.url}, Key: {'***set***' if self.key else 'NOT SET'}")
             return False
         
+        # Supabase Storage API endpoint
         url = f"{self.url}/storage/v1/object/{bucket}/{filename}"
+        
+        print(f"[Supabase] 📤 Uploading {filename} to {bucket}...")
+        print(f"[Supabase] URL: {url}")
         
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
+                # Use PUT for upsert (create or replace)
+                response = await client.put(
                     url,
                     content=content,
                     headers={
@@ -83,6 +89,8 @@ class SupabaseStorage:
                     timeout=30.0
                 )
                 
+                print(f"[Supabase] Response: {response.status_code}")
+                
                 if response.status_code in (200, 201):
                     logger.info(
                         "supabase_upload_success",
@@ -90,19 +98,23 @@ class SupabaseStorage:
                         filename=filename,
                         size=len(content)
                     )
+                    print(f"[Supabase] ✅ Uploaded {filename} ({len(content)} bytes)")
                     return True
                 else:
+                    error_text = response.text
                     logger.error(
                         "supabase_upload_failed",
                         bucket=bucket,
                         filename=filename,
                         status=response.status_code,
-                        error=response.text
+                        error=error_text
                     )
+                    print(f"[Supabase] ❌ Failed: {response.status_code} - {error_text}")
                     return False
                     
         except Exception as e:
             logger.error("supabase_upload_error", error=str(e))
+            print(f"[Supabase] ❌ Exception: {e}")
             return False
     
     async def upload_index(self, index_name: str) -> bool:
@@ -132,22 +144,42 @@ class SupabaseStorage:
         Returns:
             Dict with success/failure counts
         """
+        print("\n" + "="*60)
+        print("[Supabase Upload] 🚀 STARTING UPLOAD TO SUPABASE STORAGE")
+        print("="*60)
+        
         if not self._is_configured():
             logger.warning("supabase_not_configured", action="upload_all")
+            print(f"[Supabase Upload] ❌ NOT CONFIGURED!")
+            print(f"[Supabase Upload]    URL: {self.url or 'NOT SET'}")
+            print(f"[Supabase Upload]    Key: {'***set***' if self.key else 'NOT SET'}")
             return {"success": 0, "failed": 0, "skipped": "not_configured"}
+        
+        print(f"[Supabase Upload] ✅ Credentials configured")
+        print(f"[Supabase Upload]    URL: {self.url}")
+        print(f"[Supabase Upload]    Bucket: {self.INDEX_BUCKET}")
         
         if not self.local_indexes_path.exists():
             logger.warning("indexes_directory_not_found")
+            print(f"[Supabase Upload] ❌ Indexes directory not found: {self.local_indexes_path}")
             return {"success": 0, "failed": 0, "skipped": "no_directory"}
+        
+        # List files to upload
+        files = list(self.local_indexes_path.glob("*.json"))
+        print(f"[Supabase Upload] 📁 Found {len(files)} files to upload:")
+        for f in files:
+            print(f"[Supabase Upload]    - {f.name} ({f.stat().st_size} bytes)")
         
         success = 0
         failed = 0
         
-        for filepath in self.local_indexes_path.glob("*.json"):
+        for filepath in files:
             index_name = filepath.stem
             
             try:
                 content = filepath.read_bytes()
+                print(f"\n[Supabase Upload] 📤 Uploading {filepath.name}...")
+                
                 result = await self.upload_file(
                     bucket=self.INDEX_BUCKET,
                     filename=filepath.name,
@@ -156,8 +188,10 @@ class SupabaseStorage:
                 
                 if result:
                     success += 1
+                    print(f"[Supabase Upload] ✅ {filepath.name} uploaded successfully")
                 else:
                     failed += 1
+                    print(f"[Supabase Upload] ❌ {filepath.name} failed")
                     
             except Exception as e:
                 logger.error(
@@ -165,7 +199,15 @@ class SupabaseStorage:
                     index=index_name,
                     error=str(e)
                 )
+                print(f"[Supabase Upload] ❌ {filepath.name} exception: {e}")
                 failed += 1
+        
+        print("\n" + "="*60)
+        print(f"[Supabase Upload] 📊 UPLOAD COMPLETE")
+        print(f"[Supabase Upload]    ✅ Success: {success}")
+        print(f"[Supabase Upload]    ❌ Failed:  {failed}")
+        print(f"[Supabase Upload]    📅 Time:    {datetime.utcnow().isoformat()}")
+        print("="*60 + "\n")
         
         logger.info(
             "upload_all_complete",

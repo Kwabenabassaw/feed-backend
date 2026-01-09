@@ -175,17 +175,63 @@ class IngestionJob:
         except Exception as e:
             logger.warning("tmdb_fetch_failed", error=str(e))
         
-        # TODO: Save to master_content.json / Supabase
-        # For now, just log the results
+        # Deduplicate by ID
+        seen_ids = set()
+        unique_videos = []
+        for video in all_videos:
+            vid_id = video.get("id") or video.get("youtubeKey") or video.get("tmdbId")
+            if vid_id and vid_id not in seen_ids:
+                seen_ids.add(vid_id)
+                unique_videos.append(video)
+        
+        # Ensure indexes directory exists
+        import json
+        from pathlib import Path
+        indexes_dir = Path("indexes")
+        indexes_dir.mkdir(exist_ok=True)
+        
+        # Load existing content to merge (avoid overwriting)
+        master_path = indexes_dir / "master_content.json"
+        existing_content = []
+        if master_path.exists():
+            try:
+                existing_content = json.loads(master_path.read_text())
+                logger.info("existing_content_loaded", count=len(existing_content))
+            except Exception as e:
+                logger.warning("existing_content_load_failed", error=str(e))
+        
+        # Merge: Add new items, update existing
+        existing_ids = {
+            item.get("id") or item.get("youtubeKey") or item.get("tmdbId")
+            for item in existing_content
+        }
+        
+        new_items = [v for v in unique_videos if (v.get("id") or v.get("youtubeKey") or v.get("tmdbId")) not in existing_ids]
+        merged_content = existing_content + new_items
+        
+        # Keep only last 5000 items to prevent unbounded growth
+        if len(merged_content) > 5000:
+            merged_content = merged_content[-5000:]
+        
+        # Save to disk
+        try:
+            master_path.write_text(json.dumps(merged_content, indent=2, default=str))
+            logger.info("master_content_saved", path=str(master_path), count=len(merged_content))
+            print(f"[Ingestion] ✅ Saved {len(merged_content)} items to {master_path}")
+        except Exception as e:
+            logger.error("master_content_save_failed", error=str(e))
+            print(f"[Ingestion] ❌ Save failed: {e}")
         
         duration = (datetime.utcnow() - start_time).total_seconds()
         logger.info(
             "ingestion_job_completed",
             total_items=len(all_videos),
+            new_items=len(new_items),
+            merged_total=len(merged_content),
             duration_seconds=duration
         )
         
-        return all_videos
+        return merged_content
 
 
 async def run_ingestion_job():
