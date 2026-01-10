@@ -45,6 +45,16 @@ YOUTUBE_CHANNELS = [
     "UCi8e0iOVk1fEOogdfu4YgfA",  # KinoCheck
     "UCuVFG3nXkDcxEaQXqL3SVgA",  # FilmSelect Trailer
     "UCd8fXR41jfXTcx5w9DqHkAA",  # Movie Trailers Source
+    "UCWOA1ZGywLbqmigxE4Qlvuw", "UCvC4D8onUfXzvj55ZKMzDDQ", "UCjmJDM5pRKbUlVIzDYYWb6g",
+    "UCz97F7dMxBNOfGYu3rx8aCw", "UCq0OueAsdxH6b8nyAspwViw", "UC2-BeLxzUBSs0uSrmzWhJuQ",
+    "UCF9imwPMSGz4Vq1NiTWCC7g", "UCJ6nMHaJPZvsJ-HmUmj1SeA", "UCuPivVjnfNo4mb3Oog_frZg",
+    "UC1Myj674wRVXB9I4c6Hm5zA", "UCQJWtTnAHhEG5w4uN0udnUQ", "UCE5mQnNl8Q4H2qcv4ikaXeA",
+    "UCVTQuK2CaWaTgSsoNkn5AiQ", "UC_976xMxPgzIa290Hqtk-9g", "UCi8e0iOVk1fEOogdfu4YgfA",
+    "UC3gNmTGu-TTb7xdiczlZz_g", "UCMawOL0n6QekxpuVanT_KRA", "UCWJ5MfdQZ6jXbF5gYuSAf5Q",
+    "UCOL10n-as9dXO2qtjjFUQbQ", "UCOP-gP2WgKUKfFBMnkR3iaA", "UC5hX0jtOEAobccb2dvSnYbw",
+    "UCgRQHK8Ttr1j9xCEpCAlgbQ", "UCZ8Sxmkweh65HetaZfR8YuA", "UCIsbLox_y9dCcmptjM_0rhg",
+    "UCsEukrAd64fqA7FjwkmZ_Dw", "UC0fTbhgouDMneMzSluKaXAA", "UC2iUwfYi_1FCGGqhOUNx-iA",
+    "UCP1iRaFlS5EYjJBryFV9JPw", "UCaWd5_7JhbQBe4dknZhsHJg", "UCVtL1edhT8qqY-j2JIndMzg"
 ]
 
 
@@ -382,17 +392,24 @@ class IngestionJob:
                 
                 tmdb_id = trailer.get("tmdbId")
                 media_type = trailer.get("mediaType")
+                title = trailer.get("title", "")
                 
-                # If no TMDB ID, try to look up via IMDB ID
+                # Fallback 1: Look up via IMDB ID
                 if not tmdb_id and trailer.get("imdbId"):
                     tmdb_id, media_type = await self._lookup_tmdb_by_imdb(
                         trailer["imdbId"], client
                     )
                 
+                # Fallback 2: Search by title (extract movie name from trailer title)
+                if not tmdb_id and title:
+                    tmdb_id, media_type = await self._search_tmdb_by_title(
+                        title, client
+                    )
+                
                 # Skip if still no TMDB ID (orphan trailer)
                 if not tmdb_id:
                     logger.debug("kinocheck_rejected_no_tmdb", 
-                                 title=trailer.get("title"))
+                                 title=title)
                     continue
                 
                 # Fetch full metadata from TMDB
@@ -404,6 +421,9 @@ class IngestionJob:
                     normalized["source"] = "kinocheck"
                     normalized["kinocheck_id"] = trailer.get("kinocheck_id")
                     validated.append(normalized)
+                
+                # Rate limit to avoid hammering TMDB
+                await asyncio.sleep(0.1)
         
         logger.info("kinocheck_validated", 
                     raw=len(all_trailers), 
@@ -447,6 +467,96 @@ class IngestionJob:
         
         except Exception as e:
             logger.debug("imdb_lookup_failed", imdb_id=imdb_id, error=str(e))
+        
+        return None, None
+    
+    async def _search_tmdb_by_title(
+        self, trailer_title: str, client: httpx.AsyncClient
+    ) -> tuple[Optional[int], Optional[str]]:
+        """
+        Search TMDB by title extracted from trailer title.
+        
+        Trailer titles are usually: "MOVIE NAME Official Trailer (2024)"
+        We extract the movie name and search TMDB.
+        
+        Returns:
+            Tuple of (tmdb_id, media_type) or (None, None) if not found
+        """
+        if not settings.tmdb_api_key or not trailer_title:
+            return None, None
+        
+        # Extract movie/show name from trailer title
+        # Common patterns: "MOVIE NAME Official Trailer (2024)", "MOVIE NAME Trailer (2024)"
+        import re
+        
+        # Remove common trailer suffixes
+        clean_title = trailer_title
+        patterns_to_remove = [
+            r'\s*Official\s*(New\s*)?(Final\s*)?(Trailer|Teaser|Clip).*$',
+            r'\s*Trailer\s*\d*.*$',
+            r'\s*Teaser.*$',
+            r'\s*\(\d{4}\).*$',
+            r'\s*-\s*\d+\s*Minute.*$',
+            r'\s*Season\s*\d+.*$',
+            r'\s*Chapter\s*\d+.*$',
+        ]
+        
+        for pattern in patterns_to_remove:
+            clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+        
+        clean_title = clean_title.strip()
+        
+        if not clean_title or len(clean_title) < 2:
+            return None, None
+        
+        try:
+            # Search movies first
+            response = await client.get(
+                "https://api.themoviedb.org/3/search/movie",
+                params={
+                    "api_key": settings.tmdb_api_key,
+                    "query": clean_title,
+                    "language": "en-US",
+                    "page": 1
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                
+                if results:
+                    # Return first result
+                    logger.debug("tmdb_title_match", 
+                                 query=clean_title, 
+                                 matched=results[0].get("title"))
+                    return results[0]["id"], "movie"
+            
+            # If no movie found, try TV search
+            response = await client.get(
+                "https://api.themoviedb.org/3/search/tv",
+                params={
+                    "api_key": settings.tmdb_api_key,
+                    "query": clean_title,
+                    "language": "en-US",
+                    "page": 1
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                
+                if results:
+                    logger.debug("tmdb_title_match_tv", 
+                                 query=clean_title, 
+                                 matched=results[0].get("name"))
+                    return results[0]["id"], "tv"
+        
+        except Exception as e:
+            logger.debug("title_search_failed", title=clean_title, error=str(e))
         
         return None, None
     

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     
     # Feed Configuration
-    feed_page_size: int = 10
+    feed_page_size: int = 80
     trending_ratio: float = 0.5      # 50%
     personalized_ratio: float = 0.3  # 30%
     friend_ratio: float = 0.2        # 20%

@@ -229,25 +229,31 @@ class FeedGenerator:
     
     def _tiered_shuffle(self, items: List[str]) -> List[str]:
         """
-        Tiered shuffle to preserve ranking intent.
+        Tiered shuffle to add variety while preserving some ranking intent.
         
-        - Top 3 items: No shuffle (preserve exact ranking)
-        - Items 4-7: Light shuffle (mild variety)
-        - Items 8+: Full shuffle (tail variety)
+        - Item 1: Random from top 5 (variety in first video)
+        - Items 2-5: Light shuffle
+        - Items 6+: Full shuffle (tail variety)
         """
-        if len(items) <= 3:
+        if len(items) <= 1:
             return items
         
-        top = items[:3]  # No shuffle
-        mid = items[3:7]
-        tail = items[7:]
+        if len(items) <= 5:
+            # For short lists, just shuffle everything
+            shuffled = items.copy()
+            random.shuffle(shuffled)
+            return shuffled
         
-        # Light shuffle for mid
-        if len(mid) > 1:
-            random.shuffle(mid)
+        # Pick first video randomly from top 5
+        top_5 = items[:5]
+        first_video = random.choice(top_5)
+        remaining_top = [v for v in top_5 if v != first_video]
+        
+        # Shuffle the rest of top
+        random.shuffle(remaining_top)
         
         # Full shuffle for tail
-        if len(tail) > 1:
-            random.shuffle(tail)
+        tail = items[5:]
+        random.shuffle(tail)
         
-        return top + mid + tail
+        return [first_video] + remaining_top + tail
