@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from ..config import get_settings
 from ..core.logging import get_logger
 from ..services.quota_manager import QuotaManager
+from .kinocheck import get_kinocheck_service
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -346,6 +347,145 @@ class IngestionJob:
         logger.info("discover_total_fetched", total=len(videos))
         return videos
     
+    async def fetch_kinocheck_trailers(self) -> List[dict]:
+        """
+        Fetch trailers from KinoCheck (trending + latest).
+        
+        Validates each trailer against TMDB - rejects items without TMDB ID.
+        """
+        kinocheck = get_kinocheck_service()
+        all_trailers = []
+        validated = []
+        
+        # Fetch trending trailers
+        try:
+            trending = await kinocheck.fetch_trending(limit=30, page=1)
+            all_trailers.extend(trending)
+            logger.info("kinocheck_trending_raw", count=len(trending))
+        except Exception as e:
+            logger.warning("kinocheck_trending_failed", error=str(e))
+        
+        # Fetch latest trailers
+        try:
+            latest = await kinocheck.fetch_latest(limit=20, page=1)
+            all_trailers.extend(latest)
+            logger.info("kinocheck_latest_raw", count=len(latest))
+        except Exception as e:
+            logger.warning("kinocheck_latest_failed", error=str(e))
+        
+        # Validate and normalize each trailer
+        async with httpx.AsyncClient() as client:
+            for trailer in all_trailers:
+                youtube_key = trailer.get("youtubeKey")
+                if not youtube_key:
+                    continue
+                
+                tmdb_id = trailer.get("tmdbId")
+                media_type = trailer.get("mediaType")
+                
+                # If no TMDB ID, try to look up via IMDB ID
+                if not tmdb_id and trailer.get("imdbId"):
+                    tmdb_id, media_type = await self._lookup_tmdb_by_imdb(
+                        trailer["imdbId"], client
+                    )
+                
+                # Skip if still no TMDB ID (orphan trailer)
+                if not tmdb_id:
+                    logger.debug("kinocheck_rejected_no_tmdb", 
+                                 title=trailer.get("title"))
+                    continue
+                
+                # Fetch full metadata from TMDB
+                normalized = await self._enrich_from_tmdb(
+                    tmdb_id, media_type, youtube_key, client
+                )
+                
+                if normalized:
+                    normalized["source"] = "kinocheck"
+                    normalized["kinocheck_id"] = trailer.get("kinocheck_id")
+                    validated.append(normalized)
+        
+        logger.info("kinocheck_validated", 
+                    raw=len(all_trailers), 
+                    validated=len(validated))
+        return validated
+    
+    async def _lookup_tmdb_by_imdb(
+        self, imdb_id: str, client: httpx.AsyncClient
+    ) -> tuple[Optional[int], Optional[str]]:
+        """
+        Look up TMDB ID using IMDB ID.
+        
+        Returns:
+            Tuple of (tmdb_id, media_type) or (None, None) if not found
+        """
+        if not settings.tmdb_api_key:
+            return None, None
+        
+        try:
+            response = await client.get(
+                f"https://api.themoviedb.org/3/find/{imdb_id}",
+                params={
+                    "api_key": settings.tmdb_api_key,
+                    "external_source": "imdb_id"
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Check movie results
+                movie_results = data.get("movie_results", [])
+                if movie_results:
+                    return movie_results[0]["id"], "movie"
+                
+                # Check TV results
+                tv_results = data.get("tv_results", [])
+                if tv_results:
+                    return tv_results[0]["id"], "tv"
+        
+        except Exception as e:
+            logger.debug("imdb_lookup_failed", imdb_id=imdb_id, error=str(e))
+        
+        return None, None
+    
+    async def _enrich_from_tmdb(
+        self, 
+        tmdb_id: int, 
+        media_type: str, 
+        youtube_key: str,
+        client: httpx.AsyncClient
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch full metadata from TMDB for a KinoCheck trailer.
+        
+        Returns:
+            Normalized feed item or None if fetch failed
+        """
+        if not settings.tmdb_api_key or not media_type:
+            return None
+        
+        try:
+            endpoint = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}"
+            response = await client.get(
+                endpoint,
+                params={"api_key": settings.tmdb_api_key},
+                timeout=10.0
+            )
+            
+            if response.status_code != 200:
+                return None
+            
+            item = response.json()
+            
+            # Use existing normalization
+            return self._normalize_tmdb_item(item, media_type, youtube_key)
+            
+        except Exception as e:
+            logger.debug("tmdb_enrich_failed", tmdb_id=tmdb_id, error=str(e))
+            return None
+    
     async def run(self):
         """
         Run the ingestion job.
@@ -393,6 +533,17 @@ class IngestionJob:
         except Exception as e:
             logger.warning("discover_fetch_failed", error=str(e))
             print(f"[Ingestion] ⚠️ TMDB Discover failed: {e}")
+        
+        # KinoCheck trailers (trending + latest)
+        print("[Ingestion] 🎞️ Fetching KinoCheck trailers...")
+        try:
+            kinocheck_videos = await self.fetch_kinocheck_trailers()
+            all_videos.extend(kinocheck_videos)
+            logger.info("kinocheck_fetched", count=len(kinocheck_videos))
+            print(f"[Ingestion] ✅ KinoCheck: {len(kinocheck_videos)} validated trailers")
+        except Exception as e:
+            logger.warning("kinocheck_fetch_failed", error=str(e))
+            print(f"[Ingestion] ⚠️ KinoCheck failed: {e}")
         
         # Deduplicate by ID
         seen_ids = set()
