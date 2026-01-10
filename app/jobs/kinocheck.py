@@ -30,26 +30,40 @@ class KinoCheckService:
     All trailers include YouTube video IDs.
     """
     
-    async def fetch_trending(self, limit: int = 30, page: int = 1) -> List[Dict[str, Any]]:
+    # Available genres for KinoCheck filtering
+    GENRES = [
+        "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
+        "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
+        "Romance", "Science Fiction", "Thriller", "War", "Western", "Superhero"
+    ]
+    
+    async def fetch_trending(
+        self, limit: int = 30, page: int = 1, genres: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Fetch trending trailers from KinoCheck.
         
         Args:
             limit: Maximum trailers to fetch
             page: Page number for pagination
+            genres: Optional comma-separated genres (e.g., "Action,Thriller")
             
         Returns:
             List of trailer dicts with youtube_video_id, tmdb_movie_id, etc.
         """
-        logger.info("kinocheck_fetch_trending", limit=limit, page=page)
+        logger.info("kinocheck_fetch_trending", limit=limit, page=page, genres=genres)
         
         try:
             async with httpx.AsyncClient() as client:
                 await asyncio.sleep(RATE_LIMIT_DELAY)
                 
+                params = {"limit": limit, "page": page, "language": "en"}
+                if genres:
+                    params["genres"] = genres
+                
                 response = await client.get(
                     f"{KINOCHECK_BASE_URL}/trailers/trending",
-                    params={"limit": limit, "page": page, "language": "en"},
+                    params=params,
                     timeout=15.0
                 )
                 
@@ -60,12 +74,25 @@ class KinoCheckService:
                 data = response.json()
                 trailers = self._parse_response(data)
                 
-                logger.info("kinocheck_trending_fetched", count=len(trailers))
+                logger.info("kinocheck_trending_fetched", count=len(trailers), genres=genres)
                 return trailers
                 
         except Exception as e:
             logger.error("kinocheck_fetch_error", error=str(e))
             return []
+    
+    async def fetch_by_genre(self, genre: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Fetch trailers for a specific genre.
+        
+        Args:
+            genre: Genre name (e.g., "Action", "Horror", "Comedy")
+            limit: Maximum trailers to fetch
+            
+        Returns:
+            List of trailer dicts for that genre
+        """
+        return await self.fetch_trending(limit=limit, page=1, genres=genre)
     
     async def fetch_latest(self, limit: int = 20, page: int = 1) -> List[Dict[str, Any]]:
         """

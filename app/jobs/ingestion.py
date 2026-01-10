@@ -118,6 +118,22 @@ class IngestionJob:
         TMDB API: /movie/{id}/videos or /tv/{id}/videos
         Returns the first YouTube trailer/teaser key, or None if not found.
         """
+        videos = await self.fetch_tmdb_all_videos(tmdb_id, media_type, client)
+        if videos:
+            return videos[0]["key"]
+        return None
+    
+    async def fetch_tmdb_all_videos(
+        self, tmdb_id: int, media_type: str, client: httpx.AsyncClient
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch ALL YouTube videos for a movie/TV show from TMDB.
+        
+        Returns list of videos with types: Trailer, Behind the Scenes, Clip, Featurette, Teaser
+        """
+        # Video types to fetch (in priority order for sorting)
+        VIDEO_TYPES = ["Trailer", "Behind the Scenes", "Clip", "Featurette", "Teaser", "Bloopers"]
+        
         try:
             endpoint = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/videos"
             response = await client.get(
@@ -130,21 +146,29 @@ class IngestionJob:
                 data = response.json()
                 results = data.get("results", [])
                 
-                # Priority: Trailer > Teaser > Any YouTube video
-                for video_type in ["Trailer", "Teaser"]:
-                    for video in results:
-                        if video.get("site") == "YouTube" and video.get("type") == video_type:
-                            return video.get("key")
-                
-                # Fallback: any YouTube video
+                # Filter YouTube videos and extract key info
+                videos = []
                 for video in results:
-                    if video.get("site") == "YouTube":
-                        return video.get("key")
+                    if video.get("site") == "YouTube" and video.get("key"):
+                        video_type = video.get("type", "Unknown")
+                        if video_type in VIDEO_TYPES:
+                            videos.append({
+                                "key": video.get("key"),
+                                "type": video_type,
+                                "name": video.get("name", ""),
+                                "official": video.get("official", False),
+                            })
+                
+                # Sort by priority (Trailer first, then BTS, etc.)
+                type_priority = {vt: i for i, vt in enumerate(VIDEO_TYPES)}
+                videos.sort(key=lambda v: type_priority.get(v["type"], 99))
+                
+                return videos
                         
         except Exception as e:
             logger.debug("tmdb_video_fetch_failed", tmdb_id=tmdb_id, error=str(e))
         
-        return None
+        return []
     
     async def fetch_tmdb_trending(self) -> List[dict]:
         """
@@ -176,19 +200,31 @@ class IngestionJob:
                 data = response.json()
                 movie_items = data.get("results", [])[:10]
             
-            # Fetch video keys for movies
+            # Fetch ALL videos for movies (trailers, BTS, clips, featurettes)
             for item in movie_items:
                 tmdb_id = item["id"]
-                youtube_key = await self.fetch_tmdb_video_key(tmdb_id, "movie", client)
+                all_videos = await self.fetch_tmdb_all_videos(tmdb_id, "movie", client)
                 
-                # Skip items without YouTube video
-                if not youtube_key:
-                    logger.debug("tmdb_movie_no_trailer", tmdb_id=tmdb_id)
+                # Skip items without any YouTube videos
+                if not all_videos:
+                    logger.debug("tmdb_movie_no_videos", tmdb_id=tmdb_id)
                     continue
                 
-                normalized = self._normalize_tmdb_item(item, "movie", youtube_key)
-                videos.append(normalized)
-                logger.debug("tmdb_movie_processed", tmdb_id=tmdb_id, youtube_key=youtube_key)
+                # Create a feed item for each video (up to 3 per movie)
+                for video_info in all_videos[:3]:
+                    normalized = self._normalize_tmdb_item(
+                        item, "movie", video_info["key"]
+                    )
+                    # Set the video type (trailer, bts, clip, etc.)
+                    normalized["videoType"] = video_info["type"].lower().replace(" ", "_")
+                    normalized["videoName"] = video_info.get("name", "")
+                    # Make ID unique by including video key
+                    normalized["id"] = f"{video_info['key']}"
+                    videos.append(normalized)
+                    logger.debug("tmdb_movie_video_added", 
+                                 tmdb_id=tmdb_id, 
+                                 video_type=video_info["type"],
+                                 youtube_key=video_info["key"])
             
             # Trending TV
             response = await client.get(
@@ -203,19 +239,31 @@ class IngestionJob:
                 data = response.json()
                 tv_items = data.get("results", [])[:10]
             
-            # Fetch video keys for TV shows
+            # Fetch ALL videos for TV shows (trailers, BTS, clips, featurettes)
             for item in tv_items:
                 tmdb_id = item["id"]
-                youtube_key = await self.fetch_tmdb_video_key(tmdb_id, "tv", client)
+                all_videos = await self.fetch_tmdb_all_videos(tmdb_id, "tv", client)
                 
-                # Skip items without YouTube video
-                if not youtube_key:
-                    logger.debug("tmdb_tv_no_trailer", tmdb_id=tmdb_id)
+                # Skip items without any YouTube videos
+                if not all_videos:
+                    logger.debug("tmdb_tv_no_videos", tmdb_id=tmdb_id)
                     continue
                 
-                normalized = self._normalize_tmdb_item(item, "tv", youtube_key)
-                videos.append(normalized)
-                logger.debug("tmdb_tv_processed", tmdb_id=tmdb_id, youtube_key=youtube_key)
+                # Create a feed item for each video (up to 3 per show)
+                for video_info in all_videos[:3]:
+                    normalized = self._normalize_tmdb_item(
+                        item, "tv", video_info["key"]
+                    )
+                    # Set the video type (trailer, bts, clip, etc.)
+                    normalized["videoType"] = video_info["type"].lower().replace(" ", "_")
+                    normalized["videoName"] = video_info.get("name", "")
+                    # Make ID unique by including video key
+                    normalized["id"] = f"{video_info['key']}"
+                    videos.append(normalized)
+                    logger.debug("tmdb_tv_video_added", 
+                                 tmdb_id=tmdb_id, 
+                                 video_type=video_info["type"],
+                                 youtube_key=video_info["key"])
         
         # Log summary
         logger.info("tmdb_videos_fetched", total=len(videos))
@@ -367,21 +415,39 @@ class IngestionJob:
         all_trailers = []
         validated = []
         
-        # Fetch trending trailers
+        # Fetch trending trailers (page 1)
         try:
-            trending = await kinocheck.fetch_trending(limit=30, page=1)
+            trending = await kinocheck.fetch_trending(limit=50, page=1)
             all_trailers.extend(trending)
-            logger.info("kinocheck_trending_raw", count=len(trending))
+            logger.info("kinocheck_trending_p1_raw", count=len(trending))
         except Exception as e:
             logger.warning("kinocheck_trending_failed", error=str(e))
         
+        # Fetch trending trailers (page 2 for more variety)
+        try:
+            trending_p2 = await kinocheck.fetch_trending(limit=50, page=2)
+            all_trailers.extend(trending_p2)
+            logger.info("kinocheck_trending_p2_raw", count=len(trending_p2))
+        except Exception as e:
+            logger.warning("kinocheck_trending_p2_failed", error=str(e))
+        
         # Fetch latest trailers
         try:
-            latest = await kinocheck.fetch_latest(limit=20, page=1)
+            latest = await kinocheck.fetch_latest(limit=50, page=1)
             all_trailers.extend(latest)
             logger.info("kinocheck_latest_raw", count=len(latest))
         except Exception as e:
             logger.warning("kinocheck_latest_failed", error=str(e))
+        
+        # Fetch by popular genres (10 each from 5 genres = 50 more trailers)
+        popular_genres = ["Action", "Horror", "Comedy", "Thriller", "Science Fiction"]
+        for genre in popular_genres:
+            try:
+                genre_trailers = await kinocheck.fetch_by_genre(genre, limit=10)
+                all_trailers.extend(genre_trailers)
+                logger.info("kinocheck_genre_raw", genre=genre, count=len(genre_trailers))
+            except Exception as e:
+                logger.warning("kinocheck_genre_failed", genre=genre, error=str(e))
         
         # Validate and normalize each trailer
         async with httpx.AsyncClient() as client:

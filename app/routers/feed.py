@@ -72,7 +72,7 @@ async def get_feed(
     request: Request,
     feed_type: FeedType = Query(FeedType.FOR_YOU, description="Type of feed"),
     cursor: Optional[str] = Query(None, description="Pagination cursor"),
-    limit: int = Query(10, ge=1, le=50, description="Number of items"),
+    limit: int = Query(10, ge=1, le=100, description="Number of items"),
     current_user: dict = Depends(get_current_user)
 ):
     """
