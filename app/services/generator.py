@@ -210,7 +210,11 @@ class FeedGenerator:
                 collected_set.add(id)
         
         # Light shuffle to add variety (preserve top items)
-        selected = self._tiered_shuffle(collected_ids)[:limit]
+        shuffled_videos = self._tiered_shuffle(collected_ids)[:limit]
+        
+        # Fetch image IDs and mix into feed (3 videos : 1 image ratio)
+        image_ids = await self.index_pool.get_image_ids(limit=limit // 3)
+        selected = self._mix_images_into_feed(shuffled_videos, image_ids)
         
         # Mark these IDs as sent in session
         await self.dedup.mark_ids_sent(session_id, selected)
@@ -222,6 +226,7 @@ class FeedGenerator:
             "feed_generated",
             uid=user_context.uid,
             count=len(selected),
+            images=len(image_ids),
             session_id=session_id
         )
         
@@ -257,3 +262,36 @@ class FeedGenerator:
         random.shuffle(tail)
         
         return [first_video] + remaining_top + tail
+    
+    def _mix_images_into_feed(
+        self, 
+        video_ids: List[str], 
+        image_ids: List[str]
+    ) -> List[str]:
+        """
+        Mix image IDs into video feed at 3:1 ratio.
+        
+        Pattern: video, video, video, IMAGE, video, video, video, IMAGE...
+        
+        Args:
+            video_ids: List of video content IDs
+            image_ids: List of image content IDs
+            
+        Returns:
+            Mixed list of IDs with images inserted every 3 videos
+        """
+        if not image_ids:
+            return video_ids
+        
+        result = []
+        img_idx = 0
+        
+        for i, vid_id in enumerate(video_ids):
+            result.append(vid_id)
+            
+            # Insert an image after every 3 videos
+            if (i + 1) % 3 == 0 and img_idx < len(image_ids):
+                result.append(image_ids[img_idx])
+                img_idx += 1
+        
+        return result

@@ -134,13 +134,17 @@ class Hydrator:
             
             # Create minimal entries for missing items
             for item_id in missing_ids:
+                # Check if this is an image item (IDs start with "img_")
+                is_image = item_id.startswith("img_")
+                
                 hydrated.append({
                     "id": item_id,
-                    "youtubeKey": item_id,
-                    "title": "Loading...",
-                    "contentType": "trailer",
+                    "youtubeKey": None if is_image else item_id,
+                    "title": "Image" if is_image else "Video",
+                    "contentType": "image" if is_image else "trailer",
                     "source": source_tags.get(item_id, "unknown") if source_tags else "unknown",
                     "genres": [],
+                    "isMissing": True,  # Flag for debugging
                 })
         
         logger.info(

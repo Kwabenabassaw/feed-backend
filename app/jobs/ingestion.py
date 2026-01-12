@@ -170,6 +170,59 @@ class IngestionJob:
         
         return []
     
+    async def fetch_tmdb_images(
+        self, tmdb_id: int, media_type: str, client: httpx.AsyncClient
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch movie stills and backdrops from TMDB.
+        
+        TMDB API: /movie/{id}/images or /tv/{id}/images
+        Returns list of image URLs with metadata.
+        """
+        TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
+        
+        try:
+            endpoint = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/images"
+            response = await client.get(
+                endpoint,
+                params={"api_key": settings.tmdb_api_key},
+                timeout=5.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                images = []
+                
+                # Get backdrops (landscape images - best for feed)
+                for img in data.get("backdrops", [])[:3]:  # Max 3 per movie
+                    if img.get("file_path"):
+                        images.append({
+                            "url": f"{TMDB_IMAGE_BASE}{img['file_path']}",
+                            "type": "backdrop",
+                            "width": img.get("width", 0),
+                            "height": img.get("height", 0),
+                            "aspectRatio": img.get("aspect_ratio", 1.78),
+                        })
+                
+                # Get stills (for TV shows - scene captures)
+                if media_type == "tv":
+                    for img in data.get("stills", [])[:2]:  # Max 2 stills
+                        if img.get("file_path"):
+                            images.append({
+                                "url": f"{TMDB_IMAGE_BASE}{img['file_path']}",
+                                "type": "still",
+                                "width": img.get("width", 0),
+                                "height": img.get("height", 0),
+                                "aspectRatio": img.get("aspect_ratio", 1.78),
+                            })
+                
+                return images
+                        
+        except Exception as e:
+            logger.debug("tmdb_images_fetch_failed", tmdb_id=tmdb_id, error=str(e))
+        
+        return []
+    
     async def fetch_tmdb_trending(self) -> List[dict]:
         """
         Fetch trending content from TMDB with YouTube trailer keys.
@@ -404,6 +457,69 @@ class IngestionJob:
         
         logger.info("discover_total_fetched", total=len(videos))
         return videos
+    
+    async def fetch_image_feed_items(self) -> List[dict]:
+        """
+        Fetch image feed items (movie stills/backdrops) from TMDB trending.
+        
+        Creates image-type content items to be mixed between videos in the feed.
+        Fetches 1 image per trending movie (max 15 images).
+        """
+        if not settings.tmdb_api_key:
+            return []
+        
+        images = []
+        
+        async with httpx.AsyncClient() as client:
+            # Get trending movies for image content
+            response = await client.get(
+                "https://api.themoviedb.org/3/trending/movie/week",
+                params={"api_key": settings.tmdb_api_key},
+                timeout=10.0
+            )
+            
+            if response.status_code != 200:
+                return []
+            
+            data = response.json()
+            items = data.get("results", [])[:15]  # Max 15 movies
+            
+            for item in items:
+                tmdb_id = item["id"]
+                title = item.get("title", "Unknown")
+                
+                # Fetch images for this movie
+                movie_images = await self.fetch_tmdb_images(tmdb_id, "movie", client)
+                
+                # Take only the first (best) backdrop
+                if movie_images:
+                    img = movie_images[0]
+                    
+                    # Build image feed item
+                    poster_path = item.get("poster_path")
+                    
+                    images.append({
+                        "id": f"img_{tmdb_id}",
+                        "youtubeKey": None,  # No video for images
+                        "contentType": "image",  # KEY: marks this as image
+                        "imageUrl": img["url"],
+                        "imageType": img["type"],
+                        "tmdbId": tmdb_id,
+                        "mediaType": "movie",
+                        "title": title,
+                        "overview": item.get("overview", ""),
+                        "poster": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
+                        "posterPath": poster_path,
+                        "voteAverage": item.get("vote_average", 0),
+                        "releaseDate": item.get("release_date"),
+                        "genres": [],
+                        "source": "tmdb_image",
+                    })
+                    
+                    logger.debug("image_feed_item_created", tmdb_id=tmdb_id, title=title)
+        
+        logger.info("image_feed_items_fetched", count=len(images))
+        return images
     
     async def fetch_kinocheck_trailers(self) -> List[dict]:
         """
@@ -721,6 +837,18 @@ class IngestionJob:
             logger.warning("kinocheck_fetch_failed", error=str(e))
             print(f"[Ingestion] ⚠️ KinoCheck failed: {e}")
         
+        # Movie images (for mixed feed - images between videos)
+        print("[Ingestion] 🖼️ Fetching movie images...")
+        all_images = []
+        try:
+            image_items = await self.fetch_image_feed_items()
+            all_images.extend(image_items)
+            logger.info("images_fetched", count=len(image_items))
+            print(f"[Ingestion] ✅ Images: {len(image_items)} movie stills/backdrops")
+        except Exception as e:
+            logger.warning("images_fetch_failed", error=str(e))
+            print(f"[Ingestion] ⚠️ Images failed: {e}")
+        
         # Deduplicate by ID
         seen_ids = set()
         unique_videos = []
@@ -752,7 +880,10 @@ class IngestionJob:
             for item in existing_content
         }
         
-        new_items = [v for v in unique_videos if (v.get("id") or v.get("youtubeKey") or v.get("tmdbId")) not in existing_ids]
+        # Combine videos and images
+        all_content = unique_videos + all_images
+        
+        new_items = [v for v in all_content if (v.get("id") or v.get("youtubeKey") or v.get("tmdbId")) not in existing_ids]
         merged_content = existing_content + new_items
         
         # Keep only last 5000 items to prevent unbounded growth

@@ -159,3 +159,52 @@ class IndexPoolService:
         self._cache.clear()
         self._cache_timestamps.clear()
         logger.info("index_cache_cleared")
+    
+    async def get_image_ids(self, limit: int = 10) -> List[str]:
+        """
+        Get image content IDs (for mixed feeds).
+        
+        Filters master_content.json for items with contentType == 'image'.
+        Checks Supabase first, then local file.
+        """
+        from pathlib import Path
+        import json
+        
+        data = None
+        
+        # Try Supabase first (for production/Render)
+        if self.settings.supabase_url and self.settings.supabase_key:
+            try:
+                import httpx
+                url = f"{self.settings.supabase_url}/storage/v1/object/public/content/master_content.json"
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, timeout=10.0)
+                    if response.status_code == 200:
+                        data = response.json()
+            except Exception as e:
+                logger.debug("supabase_image_ids_failed", error=str(e))
+        
+        # Fall back to local file
+        if data is None:
+            local_path = Path("indexes") / "master_content.json"
+            if local_path.exists():
+                try:
+                    data = json.loads(local_path.read_text())
+                except Exception as e:
+                    logger.debug("local_image_ids_failed", error=str(e))
+        
+        if data is None:
+            return []
+        
+        # Filter for image content
+        image_ids = [
+            item.get("id") 
+            for item in data 
+            if item.get("contentType") == "image" and item.get("id")
+        ]
+        
+        # Shuffle to add variety
+        import random
+        random.shuffle(image_ids)
+        
+        return image_ids[:limit]
