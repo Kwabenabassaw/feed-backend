@@ -213,7 +213,7 @@ class FeedGenerator:
         shuffled_videos = self._tiered_shuffle(collected_ids)[:limit]
         
         # Fetch image IDs and mix into feed (3 videos : 1 image ratio)
-        image_ids = await self.index_pool.get_image_ids(limit=limit // 3)
+        image_ids = await self.index_pool.get_image_ids(limit=50)
         selected = self._mix_images_into_feed(shuffled_videos, image_ids)
         
         # Mark these IDs as sent in session

@@ -780,135 +780,169 @@ class IngestionJob:
     
     async def run(self):
         """
-        Run the ingestion job.
+        Run the ingestion job with smart merge and immediate sync.
         
-        1. Fetch from all YouTube channels (via RSS - free)
-        2. Fetch TMDB trending
-        3. Fetch TMDB discover by genre (for variety)
-        4. Merge and deduplicate
-        5. Save to master_content.json
+        1. Fetch candidates from all sources (YouTube RSS, TMDB, KinoCheck)
+        2. Merge into content dictionary with priority for rich metadata (TMDB/KinoCheck > RSS)
+        3. Save to master_content.json locally
+        4. Upload immediately to Supabase Storage
         """
         logger.info("ingestion_job_started")
         print("\n" + "="*60)
-        print("[Ingestion] 🚀 Starting content ingestion...")
+        print("[Ingestion] 🚀 Starting content ingestion with smart-merge...")
         print("="*60)
         start_time = datetime.utcnow()
         
-        all_videos = []
+        # Candidates list (will be merged into a dict)
+        candidates = []
+        
+        # --- PHASE 1: Data Collection ---
         
         # YouTube RSS (free, no quota)
-        print("[Ingestion] 📺 Fetching YouTube RSS feeds...")
         for channel_id in YOUTUBE_CHANNELS:
             videos = await self.fetch_youtube_rss(channel_id)
-            all_videos.extend(videos)
-            logger.info("youtube_rss_fetched", channel=channel_id, count=len(videos))
-        print(f"[Ingestion] ✅ YouTube RSS: {len(all_videos)} videos from {len(YOUTUBE_CHANNELS)} channels")
+            for v in videos:
+                v["merge_priority"] = 0  # Lowest priority
+            candidates.extend(videos)
+        print(f"[Ingestion] ✅ YouTube RSS: {len(candidates)} candidates fetched")
         
-        # TMDB trending (uses quota)
-        print("[Ingestion] 🎬 Fetching TMDB trending...")
+        # TMDB trending
         try:
             tmdb_videos = await self.fetch_tmdb_trending()
-            all_videos.extend(tmdb_videos)
-            logger.info("tmdb_fetched", count=len(tmdb_videos))
-            print(f"[Ingestion] ✅ TMDB Trending: {len(tmdb_videos)} videos with trailers")
+            for v in tmdb_videos:
+                v["merge_priority"] = 2  # High priority (full metadata)
+            candidates.extend(tmdb_videos)
+            print(f"[Ingestion] ✅ TMDB Trending: {len(tmdb_videos)} candidates fetched")
         except Exception as e:
             logger.warning("tmdb_fetch_failed", error=str(e))
-            print(f"[Ingestion] ⚠️ TMDB Trending failed: {e}")
         
-        # TMDB discover by genre (for variety)
-        print("[Ingestion] 🎭 Fetching TMDB discover by genre...")
+        # TMDB discover
         try:
             discover_videos = await self.fetch_tmdb_discover_by_genre()
-            all_videos.extend(discover_videos)
-            logger.info("discover_fetched", count=len(discover_videos))
-            print(f"[Ingestion] ✅ TMDB Discover: {len(discover_videos)} videos across 10 genres")
+            for v in discover_videos:
+                v["merge_priority"] = 2
+            candidates.extend(discover_videos)
+            print(f"[Ingestion] ✅ TMDB Discover: {len(discover_videos)} candidates fetched")
         except Exception as e:
             logger.warning("discover_fetch_failed", error=str(e))
-            print(f"[Ingestion] ⚠️ TMDB Discover failed: {e}")
-        
-        # KinoCheck trailers (trending + latest)
-        print("[Ingestion] 🎞️ Fetching KinoCheck trailers...")
+            
+        # KinoCheck
         try:
             kinocheck_videos = await self.fetch_kinocheck_trailers()
-            all_videos.extend(kinocheck_videos)
-            logger.info("kinocheck_fetched", count=len(kinocheck_videos))
-            print(f"[Ingestion] ✅ KinoCheck: {len(kinocheck_videos)} validated trailers")
+            for v in kinocheck_videos:
+                v["merge_priority"] = 3  # Highest priority (KinoCheck specific context)
+            candidates.extend(kinocheck_videos)
+            print(f"[Ingestion] ✅ KinoCheck: {len(kinocheck_videos)} candidates fetched")
         except Exception as e:
             logger.warning("kinocheck_fetch_failed", error=str(e))
-            print(f"[Ingestion] ⚠️ KinoCheck failed: {e}")
-        
-        # Movie images (for mixed feed - images between videos)
-        print("[Ingestion] 🖼️ Fetching movie images...")
-        all_images = []
+            
+        # Images
+        image_items = []
         try:
             image_items = await self.fetch_image_feed_items()
-            all_images.extend(image_items)
-            logger.info("images_fetched", count=len(image_items))
-            print(f"[Ingestion] ✅ Images: {len(image_items)} movie stills/backdrops")
+            for img in image_items:
+                img["merge_priority"] = 1  # Moderate priority
+            candidates.extend(image_items)
+            print(f"[Ingestion] ✅ Images: {len(image_items)} candidates fetched")
         except Exception as e:
             logger.warning("images_fetch_failed", error=str(e))
-            print(f"[Ingestion] ⚠️ Images failed: {e}")
+
+        # --- PHASE 2: Smart Merge ---
         
-        # Deduplicate by ID
-        seen_ids = set()
-        unique_videos = []
-        for video in all_videos:
-            vid_id = video.get("id") or video.get("youtubeKey") or video.get("tmdbId")
-            if vid_id and vid_id not in seen_ids:
-                seen_ids.add(vid_id)
-                unique_videos.append(video)
-        
-        # Ensure indexes directory exists
-        import json
         from pathlib import Path
+        import json
         indexes_dir = Path("indexes")
         indexes_dir.mkdir(exist_ok=True)
-        
-        # Load existing content to merge (avoid overwriting)
         master_path = indexes_dir / "master_content.json"
-        existing_content = []
+        
+        # Build content map (id -> item)
+        content_map = {}
+        
+        # 1. Load existing content first
         if master_path.exists():
             try:
                 existing_content = json.loads(master_path.read_text())
-                logger.info("existing_content_loaded", count=len(existing_content))
+                for item in existing_content:
+                    idx = item.get("id") or item.get("youtubeKey")
+                    if idx:
+                        item.setdefault("merge_priority", 1)  # Assume already enriched
+                        content_map[idx] = item
+                logger.info("existing_content_loaded", count=len(content_map))
             except Exception as e:
                 logger.warning("existing_content_load_failed", error=str(e))
+
+        # 2. Merge new candidates using priority
+        new_items_count = 0
+        upgraded_count = 0
         
-        # Merge: Add new items, update existing
-        existing_ids = {
-            item.get("id") or item.get("youtubeKey") or item.get("tmdbId")
-            for item in existing_content
-        }
+        # Sort candidates by priority so higher priority naturally overwrites if we processed blindly,
+        # but we'll use an explicit logic for clarity.
+        for candidate in candidates:
+            idx = candidate.get("id") or candidate.get("youtubeKey")
+            if not idx:
+                continue
+                
+            if idx not in content_map:
+                # New item
+                content_map[idx] = candidate
+                new_items_count += 1
+            else:
+                # Existing item - check if new one is "better"
+                existing = content_map[idx]
+                new_priority = candidate.get("merge_priority", 0)
+                old_priority = existing.get("merge_priority", 0)
+                
+                # Upgrade if priority is higher OR if current one is "missing" (Hydrator fallback)
+                if new_priority > old_priority or existing.get("isMissing"):
+                    # Preserve original source if it was manual/special? (Optional)
+                    # For now, just take the richer metadata
+                    content_map[idx] = candidate
+                    upgraded_count += 1
         
-        # Combine videos and images
-        all_content = unique_videos + all_images
+        # --- PHASE 3: Save & Sync ---
         
-        new_items = [v for v in all_content if (v.get("id") or v.get("youtubeKey") or v.get("tmdbId")) not in existing_ids]
-        merged_content = existing_content + new_items
+        # Convert map back to list and sort by updatedAt (or publishedAt)
+        # We sort to keep a predictable order (last 5000)
+        final_content = list(content_map.values())
         
-        # Keep only last 5000 items to prevent unbounded growth
-        if len(merged_content) > 5000:
-            merged_content = merged_content[-5000:]
-        
-        # Save to disk
+        # Handle growth limit
+        if len(final_content) > 5000:
+            # Simple chronological prune or priority prune? 
+            # For now, just keep last 5000
+            final_content = final_content[-5000:]
+            
+        # Save locally
         try:
-            master_path.write_text(json.dumps(merged_content, indent=2, default=str))
-            logger.info("master_content_saved", path=str(master_path), count=len(merged_content))
-            print(f"[Ingestion] ✅ Saved {len(merged_content)} items to {master_path}")
+            master_path.write_text(json.dumps(final_content, indent=2, default=str))
+            logger.info("master_content_saved_locally", count=len(final_content), new=new_items_count, upgraded=upgraded_count)
+            print(f"[Ingestion] ✅ Saved {len(final_content)} items locally ({new_items_count} new, {upgraded_count} upgraded)")
         except Exception as e:
-            logger.error("master_content_save_failed", error=str(e))
-            print(f"[Ingestion] ❌ Save failed: {e}")
-        
+            logger.error("local_save_failed", error=str(e))
+
+        # Upload to Supabase immediately (CRITICAL for Hydrator consistency)
+        try:
+            from ..services.supabase_storage import get_supabase_storage
+            storage = get_supabase_storage()
+            content_bytes = json.dumps(final_content, default=str).encode()
+            success = await storage.upload_file(
+                bucket="content",
+                filename="master_content.json",
+                content=content_bytes
+            )
+            if success:
+                logger.info("master_content_synced_to_supabase")
+                print(f"[Ingestion] ☁️ Successfully synced master_content.json to Supabase")
+            else:
+                print(f"[Ingestion] ⚠️ Sync to Supabase failed")
+        except Exception as e:
+            logger.error("supabase_sync_failed", error=str(e))
+            print(f"[Ingestion] ❌ Sync error: {e}")
+
         duration = (datetime.utcnow() - start_time).total_seconds()
-        logger.info(
-            "ingestion_job_completed",
-            total_items=len(all_videos),
-            new_items=len(new_items),
-            merged_total=len(merged_content),
-            duration_seconds=duration
-        )
+        logger.info("ingestion_job_completed", duration_seconds=duration)
+        print(f"[Ingestion] 🏁 Job completed in {duration:.2f}s\n")
         
-        return merged_content
+        return final_content
 
 
 async def run_ingestion_job():
