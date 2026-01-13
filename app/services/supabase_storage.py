@@ -45,6 +45,32 @@ class SupabaseStorage:
             "apikey": self.key,
         }
     
+    async def create_bucket(self, bucket: str) -> bool:
+        """
+        Create a new storage bucket.
+        """
+        url = f"{self.url}/storage/v1/bucket"
+        print(f"[Supabase] 🛠️ Creating bucket '{bucket}'...")
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url,
+                    json={"id": bucket, "name": bucket, "public": True},
+                    headers=self._get_headers(),
+                    timeout=10.0
+                )
+                
+                if response.status_code in (200, 201):
+                    print(f"[Supabase] ✅ Bucket '{bucket}' created")
+                    return True
+                else:
+                    print(f"[Supabase] ❌ Bucket creation failed: {response.text}")
+                    return False
+        except Exception as e:
+            print(f"[Supabase] ❌ Bucket creation error: {e}")
+            return False
+
     async def upload_file(
         self, 
         bucket: str, 
@@ -54,68 +80,53 @@ class SupabaseStorage:
     ) -> bool:
         """
         Upload a file to Supabase Storage.
-        
-        Args:
-            bucket: Storage bucket name
-            filename: Target filename
-            content: File content as bytes
-            content_type: MIME type
-            
-        Returns:
-            True if successful, False otherwise
+        Auto-creates bucket if it doesn't exist.
         """
         if not self._is_configured():
             logger.warning("supabase_not_configured", action="upload")
             print(f"[Supabase] ❌ Not configured - URL: {self.url}, Key: {'***set***' if self.key else 'NOT SET'}")
             return False
         
-        # Supabase Storage API endpoint
         url = f"{self.url}/storage/v1/object/{bucket}/{filename}"
         
         print(f"[Supabase] 📤 Uploading {filename} to {bucket}...")
-        print(f"[Supabase] URL: {url}")
         
-        try:
-            async with httpx.AsyncClient() as client:
-                # Use PUT for upsert (create or replace)
+        async with httpx.AsyncClient() as client:
+            try:
+                # Use PUT for upsert
                 response = await client.put(
                     url,
                     content=content,
                     headers={
                         **self._get_headers(),
                         "Content-Type": content_type,
-                        "x-upsert": "true",  # Overwrite if exists
+                        "x-upsert": "true",
                     },
                     timeout=30.0
                 )
                 
-                print(f"[Supabase] Response: {response.status_code}")
+                # Check for "Bucket not found" error (status 400 or 404)
+                if response.status_code in (400, 404) and "Bucket not found" in response.text:
+                    print(f"[Supabase] ⚠️ Bucket '{bucket}' not found. Attempting to create...")
+                    if await self.create_bucket(bucket):
+                        # Retry upload
+                        print(f"[Supabase] 🔄 Retrying upload...")
+                        return await self.upload_file(bucket, filename, content, content_type)
                 
                 if response.status_code in (200, 201):
-                    logger.info(
-                        "supabase_upload_success",
-                        bucket=bucket,
-                        filename=filename,
-                        size=len(content)
-                    )
+                    logger.info("supabase_upload_success", bucket=bucket, filename=filename)
                     print(f"[Supabase] ✅ Uploaded {filename} ({len(content)} bytes)")
                     return True
                 else:
                     error_text = response.text
-                    logger.error(
-                        "supabase_upload_failed",
-                        bucket=bucket,
-                        filename=filename,
-                        status=response.status_code,
-                        error=error_text
-                    )
+                    logger.error("supabase_upload_failed", status=response.status_code, error=error_text)
                     print(f"[Supabase] ❌ Failed: {response.status_code} - {error_text}")
                     return False
                     
-        except Exception as e:
-            logger.error("supabase_upload_error", error=str(e))
-            print(f"[Supabase] ❌ Exception: {e}")
-            return False
+            except Exception as e:
+                logger.error("supabase_upload_error", error=str(e))
+                print(f"[Supabase] ❌ Exception: {e}")
+                return False
     
     async def upload_index(self, index_name: str) -> bool:
         """
