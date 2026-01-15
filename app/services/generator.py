@@ -132,7 +132,8 @@ class FeedGenerator:
         self,
         user_context: UserContext,
         limit: int = 10,
-        cursor: Optional[str] = None
+        cursor: Optional[str] = None,
+        feed_type: str = "for_you"
     ) -> Tuple[List[str], str]:
         """
         Generate feed item IDs.
@@ -141,6 +142,7 @@ class FeedGenerator:
             user_context: User's preferences and history
             limit: Number of items to return
             cursor: Pagination cursor (contains session_id)
+            feed_type: "for_you" (mixed) or "trending" (global popular)
             
         Returns:
             Tuple of (selected_ids, next_cursor)
@@ -158,79 +160,82 @@ class FeedGenerator:
         # Combine with user's long-term seen history
         user_seen = set(user_context.seen_ids)
         
-        # Calculate bucket sizes
-        t_count, p_count, f_count = self._calculate_bucket_sizes(limit)
-        
-        logger.info(
-            "generating_feed",
-            uid=user_context.uid,
-            limit=limit,
-            trending=t_count,
-            personalized=p_count,
-            friend=f_count,
-            is_cold_start=user_context.is_cold_start
-        )
-        
-        # Fetch candidates from each bucket
-        trending_ids = await self._get_trending_candidates(t_count)
-        personalized_ids = await self._get_personalized_candidates(user_context, p_count)
-        friend_ids = await self._get_friend_candidates(user_context, f_count)
-        
-        # Filter seen items from each bucket
-        trending_filtered = self.dedup.filter_seen(trending_ids, user_seen, session_seen)
-        personalized_filtered = self.dedup.filter_seen(personalized_ids, user_seen, session_seen)
-        friend_filtered = self.dedup.filter_seen(friend_ids, user_seen, session_seen)
-        
-        # Collect seen IDs to avoid cross-bucket duplicates
-        collected_ids: List[str] = []
-        collected_set: Set[str] = set()
-        
-        # Take from each bucket up to their quota
-        for id in trending_filtered[:t_count]:
-            if id not in collected_set:
-                collected_ids.append(id)
-                collected_set.add(id)
-        
-        for id in personalized_filtered[:p_count]:
-            if id not in collected_set:
-                collected_ids.append(id)
-                collected_set.add(id)
-        
-        for id in friend_filtered[:f_count]:
-            if id not in collected_set:
-                collected_ids.append(id)
-                collected_set.add(id)
-        
-        # If we don't have enough, backfill from trending
-        if len(collected_ids) < limit:
-            remaining = limit - len(collected_ids)
-            available = [id for id in trending_filtered if id not in collected_set]
-            for id in available[:remaining]:
-                collected_ids.append(id)
-                collected_set.add(id)
-        
-        # Light shuffle to add variety (preserve top items)
-        shuffled_videos = self._tiered_shuffle(collected_ids)[:limit]
-        
-        # Fetch image IDs and mix into feed (3 videos : 1 image ratio)
-        image_ids = await self.index_pool.get_image_ids(limit=50)
-        selected = self._mix_images_into_feed(shuffled_videos, image_ids)
-        
-        # Mark these IDs as sent in session
-        await self.dedup.mark_ids_sent(session_id, selected)
-        
-        # Generate next cursor
-        next_cursor = self.dedup.encode_cursor(session_id, offset + limit)
-        
-        logger.info(
-            "feed_generated",
-            uid=user_context.uid,
-            count=len(selected),
-            images=len(image_ids),
-            session_id=session_id
-        )
-        
-        return selected, next_cursor
+        # --- PATH A: Trending Feed ---
+        if feed_type == "trending":
+            # 100% Trending items
+            logger.info("generating_trending_feed", uid=user_context.uid, limit=limit)
+             
+            # Fetch more to allow for filtering
+            buffer_limit = limit * 4
+            candidates = await self._get_trending_candidates(buffer_limit)
+            
+            # Filter seen items
+            filtered = self.dedup.filter_seen(candidates, user_seen, session_seen)
+            
+            # Take top N (no shuffle for pure trending, or light shuffle?)
+            # Let's do light shuffle to not show exact same order every refresh if refreshed quickly
+            # But mostly preserve order
+            selected_ids = filtered[:limit]
+            
+            # Skip personalized/friend logic
+            
+        # --- PATH B: For You (Mixed) ---
+        else:
+            # Calculate bucket sizes
+            t_count, p_count, f_count = self._calculate_bucket_sizes(limit)
+            
+            logger.info(
+                "generating_feed",
+                uid=user_context.uid,
+                limit=limit,
+                trending=t_count,
+                personalized=p_count,
+                friend=f_count,
+                is_cold_start=user_context.is_cold_start
+            )
+            
+            # Fetch candidates from each bucket
+            trending_ids = await self._get_trending_candidates(t_count)
+            personalized_ids = await self._get_personalized_candidates(user_context, p_count)
+            friend_ids = await self._get_friend_candidates(user_context, f_count)
+            
+            # Filter seen items from each bucket
+            trending_filtered = self.dedup.filter_seen(trending_ids, user_seen, session_seen)
+            personalized_filtered = self.dedup.filter_seen(personalized_ids, user_seen, session_seen)
+            friend_filtered = self.dedup.filter_seen(friend_ids, user_seen, session_seen)
+            
+            # Collect seen IDs to avoid cross-bucket duplicates
+            collected_ids: List[str] = []
+            collected_set: Set[str] = set()
+            
+            # Take from each bucket up to their quota
+            for id in trending_filtered[:t_count]:
+                if id not in collected_set:
+                    collected_ids.append(id)
+                    collected_set.add(id)
+            
+            for id in personalized_filtered[:p_count]:
+                if id not in collected_set:
+                    collected_ids.append(id)
+                    collected_set.add(id)
+            
+            for id in friend_filtered[:f_count]:
+                if id not in collected_set:
+                    collected_ids.append(id)
+                    collected_set.add(id)
+            
+            # If we don't have enough, backfill from trending
+            if len(collected_ids) < limit:
+                remaining = limit - len(collected_ids)
+                available = [id for id in trending_filtered if id not in collected_set]
+                for id in available[:remaining]:
+                    collected_ids.append(id)
+                    collected_set.add(id)
+            
+            # Light shuffle to add variety (preserve top items)
+            selected_ids = self._tiered_shuffle(collected_ids)[:limit]
+
+        # --- Common Final Steps ---
     
     def _tiered_shuffle(self, items: List[str]) -> List[str]:
         """

@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from ..config import get_settings
 from ..core.logging import get_logger
 from ..services.quota_manager import QuotaManager
+from ..services.youtube_api import get_youtube_service
 from .kinocheck import get_kinocheck_service
 
 logger = get_logger(__name__)
@@ -458,6 +459,149 @@ class IngestionJob:
         logger.info("discover_total_fetched", total=len(videos))
         return videos
     
+    async def fetch_tmdb_released_today(self) -> List[dict]:
+        """
+        Fetch trailers for movies and TV shows released TODAY.
+        
+        Uses TMDB /discover endpoint with primary_release_date filtering for movies
+        and first_air_date filtering for TV shows.
+        
+        Returns:
+            List of feed items for content released today
+        """
+        if not settings.tmdb_api_key:
+            logger.warning("tmdb_api_key_not_set")
+            return []
+        
+        # Get today's date in YYYY-MM-DD format
+        from datetime import date
+        today = date.today().isoformat()
+        
+        logger.info("fetching_released_today", date=today)
+        
+        videos = []
+        seen_tmdb_ids = set()
+        
+        async with httpx.AsyncClient() as client:
+            # Fetch movies released today
+            try:
+                await asyncio.sleep(0.25)
+                
+                response = await client.get(
+                    "https://api.themoviedb.org/3/discover/movie",
+                    params={
+                        "api_key": settings.tmdb_api_key,
+                        "primary_release_date.gte": today,
+                        "primary_release_date.lte": today,
+                        "sort_by": "popularity.desc",
+                        "page": 1,
+                    },
+                    timeout=10.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    movie_items = data.get("results", [])[:20]  # Max 20 movies
+                    
+                    logger.info("released_today_movies_found", count=len(movie_items))
+                    
+                    # Fetch ALL videos for each movie
+                    for item in movie_items:
+                        tmdb_id = item.get("id")
+                        
+                        if tmdb_id in seen_tmdb_ids:
+                            continue
+                        seen_tmdb_ids.add(tmdb_id)
+                        
+                        # Get ALL YouTube videos (trailers, clips, BTS, etc.)
+                        all_videos = await self.fetch_tmdb_all_videos(tmdb_id, "movie", client)
+                        
+                        if not all_videos:
+                            logger.debug("released_today_movie_no_videos", tmdb_id=tmdb_id)
+                            continue
+                        
+                        # Create a feed item for each video (up to 3 per movie)
+                        for video_info in all_videos[:3]:
+                            normalized = self._normalize_tmdb_item(
+                                item, "movie", video_info["key"]
+                            )
+                            normalized["videoType"] = video_info["type"].lower().replace(" ", "_")
+                            normalized["videoName"] = video_info.get("name", "")
+                            normalized["id"] = f"{video_info['key']}"
+                            normalized["source"] = "released_today"
+                            videos.append(normalized)
+                            
+                            logger.debug("released_today_movie_added", 
+                                       tmdb_id=tmdb_id, 
+                                       video_type=video_info["type"])
+                else:
+                    logger.warning("released_today_movies_fetch_failed", 
+                                 status=response.status_code)
+                    
+            except Exception as e:
+                logger.warning("released_today_movies_error", error=str(e))
+            
+            # Fetch TV shows with first air date today
+            try:
+                await asyncio.sleep(0.25)
+                
+                response = await client.get(
+                    "https://api.themoviedb.org/3/discover/tv",
+                    params={
+                        "api_key": settings.tmdb_api_key,
+                        "first_air_date.gte": today,
+                        "first_air_date.lte": today,
+                        "sort_by": "popularity.desc",
+                        "page": 1,
+                    },
+                    timeout=10.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    tv_items = data.get("results", [])[:20]  # Max 20 shows
+                    
+                    logger.info("released_today_tv_found", count=len(tv_items))
+                    
+                    # Fetch ALL videos for each TV show
+                    for item in tv_items:
+                        tmdb_id = item.get("id")
+                        
+                        if tmdb_id in seen_tmdb_ids:
+                            continue
+                        seen_tmdb_ids.add(tmdb_id)
+                        
+                        # Get ALL YouTube videos (trailers, clips, BTS, etc.)
+                        all_videos = await self.fetch_tmdb_all_videos(tmdb_id, "tv", client)
+                        
+                        if not all_videos:
+                            logger.debug("released_today_tv_no_videos", tmdb_id=tmdb_id)
+                            continue
+                        
+                        # Create a feed item for each video (up to 3 per show)
+                        for video_info in all_videos[:3]:
+                            normalized = self._normalize_tmdb_item(
+                                item, "tv", video_info["key"]
+                            )
+                            normalized["videoType"] = video_info["type"].lower().replace(" ", "_")
+                            normalized["videoName"] = video_info.get("name", "")
+                            normalized["id"] = f"{video_info['key']}"
+                            normalized["source"] = "released_today"
+                            videos.append(normalized)
+                            
+                            logger.debug("released_today_tv_added", 
+                                       tmdb_id=tmdb_id, 
+                                       video_type=video_info["type"])
+                else:
+                    logger.warning("released_today_tv_fetch_failed", 
+                                 status=response.status_code)
+                    
+            except Exception as e:
+                logger.warning("released_today_tv_error", error=str(e))
+        
+        logger.info("released_today_total_fetched", date=today, total=len(videos))
+        return videos
+    
     async def fetch_image_feed_items(self) -> List[dict]:
         """
         Fetch image feed items (movie stills/backdrops) from TMDB trending.
@@ -482,7 +626,7 @@ class IngestionJob:
                 return []
             
             data = response.json()
-            items = data.get("results", [])[:15]  # Max 15 movies
+            items = data.get("results", [])[:50]  # Max 50 movies
             
             for item in items:
                 tmdb_id = item["id"]
@@ -826,6 +970,16 @@ class IngestionJob:
         except Exception as e:
             logger.warning("discover_fetch_failed", error=str(e))
             
+        # TMDB released today
+        try:
+            released_today_videos = await self.fetch_tmdb_released_today()
+            for v in released_today_videos:
+                v["merge_priority"] = 3  # High priority (fresh today!)
+            candidates.extend(released_today_videos)
+            print(f"[Ingestion] ✅ Released Today: {len(released_today_videos)} candidates fetched")
+        except Exception as e:
+            logger.warning("released_today_fetch_failed", error=str(e))
+            
         # KinoCheck
         try:
             kinocheck_videos = await self.fetch_kinocheck_trailers()
@@ -846,6 +1000,17 @@ class IngestionJob:
             print(f"[Ingestion] ✅ Images: {len(image_items)} candidates fetched")
         except Exception as e:
             logger.warning("images_fetch_failed", error=str(e))
+            
+        # YouTube Shorts (movie recap channels)
+        try:
+            youtube_service = get_youtube_service()
+            shorts = await youtube_service.fetch_all_shorts(max_per_channel=5)
+            for short in shorts:
+                short["merge_priority"] = 3  # High priority (fresh content)
+            candidates.extend(shorts)
+            print(f"[Ingestion] ✅ YouTube Shorts: {len(shorts)} candidates fetched")
+        except Exception as e:
+            logger.warning("youtube_shorts_fetch_failed", error=str(e))
 
         # --- PHASE 2: Smart Merge ---
         

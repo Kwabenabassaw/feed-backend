@@ -1,0 +1,136 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\Users\Kobby\Desktop\Finishd\feed-backend
+plugins: anyio-4.12.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 14 items
+
+tests\test_generator.py .....FF                                          [ 50%]
+tests\test_ingestion.py ..F                                              [ 71%]
+tests\test_search.py ....                                                [100%]
+
+================================== FAILURES ===================================
+_________________ TestTieredShuffle.test_preserves_top_three __________________
+
+self = <tests.test_generator.TestTieredShuffle object at 0x000002014646DFD0>
+generator = <app.services.generator.FeedGenerator object at 0x0000020146499A60>
+
+    def test_preserves_top_three(self, generator):
+        """Top 3 items should not be shuffled."""
+        items = ["top1", "top2", "top3", "mid1", "mid2", "tail1", "tail2", "tail3"]
+    
+        # Run shuffle multiple times
+        for _ in range(10):
+            shuffled = generator._tiered_shuffle(items.copy())
+            # Top 3 should always be the same
+>           assert shuffled[:3] == ["top1", "top2", "top3"]
+E           AssertionError: assert ['mid1', 'mid2', 'top3'] == ['top1', 'top2', 'top3']
+E             
+E             At index 0 diff: 'mid1' != 'top1'
+E             Use -v to get more diff
+
+tests\test_generator.py:142: AssertionError
+_________________ TestTieredShuffle.test_handles_small_lists __________________
+
+self = <tests.test_generator.TestTieredShuffle object at 0x000002014646E270>
+generator = <app.services.generator.FeedGenerator object at 0x0000020146544EC0>
+
+    def test_handles_small_lists(self, generator):
+        """Should handle lists smaller than tier sizes."""
+        small_list = ["a", "b"]
+        result = generator._tiered_shuffle(small_list)
+>       assert result == ["a", "b"]
+E       AssertionError: assert ['b', 'a'] == ['a', 'b']
+E         
+E         At index 0 diff: 'b' != 'a'
+E         Use -v to get more diff
+
+tests\test_generator.py:148: AssertionError
+___________________________ test_normalization_tmdb ___________________________
+
+ingestion_job = <app.jobs.ingestion.IngestionJob object at 0x0000020146A223C0>
+
+    @pytest.mark.asyncio
+    async def test_normalization_tmdb(ingestion_job):
+        """Test standardizing TMDB API response to FeedItem."""
+    
+        tmdb_item = {
+            "id": 550,
+            "title": "Fight Club",
+            "release_date": "1999-10-15",
+            "poster_path": "/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+            "vote_average": 8.4,
+            "vote_count": 20000,
+            "overview": "An insomniac office worker..."
+        }
+    
+        # The normalization logic is a private method in ingestion job
+        # We should access it to test it
+    
+        # Note: _normalize_tmdb_item usually requires an extra 'video_key' arg
+        # Let's fix the signature based on usage in ingestion.py
+    
+>       result = ingestion_job._normalize_tmdb_item(
+            item=tmdb_item,
+            video_key="key_123",
+            media_type="movie",
+            priority=2
+        )
+E       TypeError: IngestionJob._normalize_tmdb_item() got an unexpected keyword argument 'video_key'
+
+tests\test_ingestion.py:131: TypeError
+============================== warnings summary ===============================
+app\models\feed_item.py:32
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\feed_item.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class IndexItem(BaseModel):
+
+app\models\feed_item.py:50
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\feed_item.py:50: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class FeedItem(BaseModel):
+
+app\models\feed_item.py:89
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\feed_item.py:89: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ContentDictionary(BaseModel):
+
+app\models\user.py:11
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\user.py:11: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class UserPreferences(BaseModel):
+
+app\models\user.py:37
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\user.py:37: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class FriendInfo(BaseModel):
+
+app\models\user.py:47
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\user.py:47: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class UserContext(BaseModel):
+
+app\models\response.py:20
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\response.py:20: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class FeedMeta(BaseModel):
+
+app\models\response.py:39
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\response.py:39: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class FeedResponse(BaseModel):
+
+app\models\response.py:61
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\response.py:61: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AnalyticsEvent(BaseModel):
+
+app\models\response.py:81
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\response.py:81: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AnalyticsBatch(BaseModel):
+
+app\models\response.py:90
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\models\response.py:90: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ErrorResponse(BaseModel):
+
+app\config.py:12
+  C:\Users\Kobby\Desktop\Finishd\feed-backend\app\config.py:12: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_generator.py::TestTieredShuffle::test_preserves_top_three
+FAILED tests/test_generator.py::TestTieredShuffle::test_handles_small_lists
+FAILED tests/test_ingestion.py::test_normalization_tmdb - TypeError: Ingestio...
+================== 3 failed, 11 passed, 12 warnings in 9.51s ==================

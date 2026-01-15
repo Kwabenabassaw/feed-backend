@@ -107,7 +107,8 @@ async def get_feed(
         selected_ids, next_cursor = await generator.generate(
             user_context=user_context,
             limit=limit,
-            cursor=cursor
+            cursor=cursor,
+            feed_type=feed_type.value
         )
         
         # Step 4: Hydrate with full metadata

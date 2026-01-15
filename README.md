@@ -40,7 +40,8 @@ uvicorn app.main:app --reload --port 8001
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /feed` | Personalized feed (auth required) |
+| `GET /feed` | Personalized feed (`?feed_type=for_you` or `trending`) |
+| `GET /search` | Search content (`?q=query&type=movie`) |
 | `POST /analytics/event` | Track user events |
 | `GET /scheduler/status` | Job status |
 | `POST /scheduler/trigger/*` | Manual job triggers |
