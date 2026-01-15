@@ -236,6 +236,26 @@ class FeedGenerator:
             selected_ids = self._tiered_shuffle(collected_ids)[:limit]
 
         # --- Common Final Steps ---
+        
+        # Fetch image IDs and mix into feed (3 videos : 1 image ratio)
+        image_ids = await self.index_pool.get_image_ids(limit=50)
+        selected = self._mix_images_into_feed(selected_ids, image_ids)
+        
+        # Mark these IDs as sent in session
+        await self.dedup.mark_ids_sent(session_id, selected)
+        
+        # Generate next cursor
+        next_cursor = self.dedup.encode_cursor(session_id, offset + limit)
+        
+        logger.info(
+            "feed_generated",
+            uid=user_context.uid,
+            count=len(selected),
+            feed_type=feed_type,
+            session_id=session_id
+        )
+        
+        return selected, next_cursor
     
     def _tiered_shuffle(self, items: List[str]) -> List[str]:
         """
