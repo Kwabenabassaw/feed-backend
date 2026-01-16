@@ -474,8 +474,7 @@ class IngestionJob:
             return []
         
         # Get today's date in YYYY-MM-DD format
-        from datetime import date
-        today = date.today().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         
         logger.info("fetching_released_today", date=today)
         

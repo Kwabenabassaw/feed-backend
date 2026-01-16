@@ -7,7 +7,7 @@ Standardized response structures for feed endpoints.
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class FeedType(str, Enum):
@@ -31,9 +31,7 @@ class FeedMeta(BaseModel):
     latency_ms: int = Field(default=0, alias="latencyMs")
     cursor: Optional[str] = Field(None, description="Cursor for next page")
     
-    class Config:
-        populate_by_name = True
-        use_enum_values = True
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
 
 class FeedResponse(BaseModel):
@@ -44,8 +42,7 @@ class FeedResponse(BaseModel):
     )
     meta: FeedMeta
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class EventType(str, Enum):
@@ -73,9 +70,7 @@ class AnalyticsEvent(BaseModel):
         description="Additional event context"
     )
     
-    class Config:
-        populate_by_name = True
-        use_enum_values = True
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
 
 class AnalyticsBatch(BaseModel):
@@ -83,8 +78,7 @@ class AnalyticsBatch(BaseModel):
     events: List[AnalyticsEvent]
     session_id: Optional[str] = Field(None, alias="sessionId")
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ErrorResponse(BaseModel):
@@ -93,5 +87,4 @@ class ErrorResponse(BaseModel):
     message: str
     status_code: int = Field(alias="statusCode")
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)

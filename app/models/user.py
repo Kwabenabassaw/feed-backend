@@ -5,7 +5,7 @@ User preferences and context for feed personalization.
 """
 
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class UserPreferences(BaseModel):
@@ -30,8 +30,7 @@ class UserPreferences(BaseModel):
         description="User's streaming services"
     )
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class FriendInfo(BaseModel):
@@ -40,8 +39,7 @@ class FriendInfo(BaseModel):
     username: Optional[str] = None
     display_name: Optional[str] = Field(None, alias="displayName")
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class UserContext(BaseModel):
@@ -82,5 +80,4 @@ class UserContext(BaseModel):
         """Check if user has any friends."""
         return len(self.friend_ids) > 0
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
