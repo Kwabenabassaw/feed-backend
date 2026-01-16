@@ -17,7 +17,8 @@
     }
   ],
   "env": {
-    "ENVIRONMENT": "production",
-    "DEBUG": "false"
+    "ENVIRONMENT": "vercel",
+    "DEBUG": "false",
+    "DISABLE_SCHEDULER": "true"
   }
 }

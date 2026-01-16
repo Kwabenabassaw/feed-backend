@@ -37,7 +37,11 @@ async def lifespan(app: FastAPI):
     )
     
     # Start background scheduler (only in production)
-    if settings.environment == "production":
+    # Check if scheduler should be disabled (for Vercel/serverless)
+    import os
+    disable_scheduler = os.environ.get("DISABLE_SCHEDULER", "false").lower() == "true"
+    
+    if settings.environment == "production" and not disable_scheduler:
         scheduler_service = get_scheduler_service()
         scheduler_service.start()
         logger.info("scheduler_auto_started")
@@ -45,11 +49,13 @@ async def lifespan(app: FastAPI):
         # Auto-seed content on startup (handles ephemeral filesystem)
         import asyncio
         asyncio.create_task(_auto_seed_on_startup())
+    elif disable_scheduler:
+        logger.info("scheduler_disabled_serverless_mode")
     
     yield
     
     # Cleanup on shutdown
-    if settings.environment == "production":
+    if settings.environment == "production" and not disable_scheduler:
         scheduler_service = get_scheduler_service()
         scheduler_service.stop()
     
