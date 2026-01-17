@@ -128,7 +128,7 @@ async def get_feed(
                 page=1,  # TODO: Calculate from cursor
                 limit=limit,
                 itemCount=len(feed_items),
-                hasMore=len(feed_items) == limit,
+                hasMore=len(feed_items) >= limit,
                 generatedAt=datetime.utcnow(),
                 latencyMs=latency_ms,
                 cursor=next_cursor
