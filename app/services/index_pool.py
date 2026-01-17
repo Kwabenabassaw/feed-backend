@@ -165,11 +165,25 @@ class IndexPoolService:
         Get image content IDs (for mixed feeds).
         
         Filters master_content.json for items with contentType == 'image'.
-        Checks Supabase first, then local file.
+        Cached in memory to avoid repeated network fetches.
         """
         from pathlib import Path
         import json
         
+        # Check cache for image_ids
+        # We reuse the _cache dict but with a special key "master_images"
+        # However, _cache stores List[IndexItem]. We need raw IDs here or generic dicts.
+        # But wait, IndexItem might not have contentType.
+        # Let's store raw IDs in a separate cache key "image_ids_list" in memory
+
+        cache_key = "image_ids_list"
+        if self._is_cache_valid(cache_key):
+            cached_ids = self._cache[cache_key] # This will be list of strings, type hint violation but works in python
+            import random
+            shuffled = cached_ids.copy()
+            random.shuffle(shuffled)
+            return shuffled[:limit]
+
         data = None
         
         # Try Supabase first (for production/Render)
@@ -203,8 +217,13 @@ class IndexPoolService:
             if item.get("contentType") == "image" and item.get("id")
         ]
         
+        # Update cache
+        self._cache[cache_key] = image_ids
+        self._cache_timestamps[cache_key] = time.time()
+
         # Shuffle to add variety
         import random
-        random.shuffle(image_ids)
+        shuffled = image_ids.copy()
+        random.shuffle(shuffled)
         
-        return image_ids[:limit]
+        return shuffled[:limit]
