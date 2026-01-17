@@ -8,7 +8,7 @@ and hydration (full metadata).
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class ContentType(str, Enum):
@@ -43,8 +43,7 @@ class IndexItem(BaseModel):
     tmdb_id: Optional[int] = Field(None, alias="tmdbId", description="TMDB ID if linked")
     media_type: Optional[str] = Field(None, alias="mediaType", description="movie or tv")
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class FeedItem(BaseModel):
@@ -81,9 +80,7 @@ class FeedItem(BaseModel):
     score: float = Field(default=0.0, description="Ranking score (internal)")
     freshness: Optional[str] = Field(None, description="new, fresh, standard")
     
-    class Config:
-        populate_by_name = True
-        use_enum_values = True
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
 
 class ContentDictionary(BaseModel):
@@ -107,5 +104,4 @@ class ContentDictionary(BaseModel):
     release_date: Optional[str] = Field(None, alias="releaseDate")
     indexed_at: datetime = Field(default_factory=datetime.utcnow, alias="indexedAt")
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)

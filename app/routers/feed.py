@@ -23,6 +23,7 @@ from ..services.deduplication import DeduplicationService
 from ..services.generator import FeedGenerator
 from ..services.hydrator import Hydrator
 from ..services.firestore_service import get_firestore_service
+from ..services.cache_service import get_redis_client
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -45,7 +46,9 @@ def get_services():
     
     if _index_pool is None:
         _index_pool = IndexPoolService()
-        _dedup_service = DeduplicationService()
+        # Inject Redis client for session management
+        redis_client = get_redis_client()
+        _dedup_service = DeduplicationService(redis_client=redis_client)
         _generator = FeedGenerator(_index_pool, _dedup_service)
         _hydrator = Hydrator()
     
@@ -125,7 +128,7 @@ async def get_feed(
                 page=1,  # TODO: Calculate from cursor
                 limit=limit,
                 itemCount=len(feed_items),
-                hasMore=len(feed_items) == limit,
+                hasMore=len(feed_items) >= limit,
                 generatedAt=datetime.utcnow(),
                 latencyMs=latency_ms,
                 cursor=next_cursor

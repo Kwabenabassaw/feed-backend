@@ -8,7 +8,7 @@ Reduces Firestore read costs by ~80%.
 import json
 from datetime import timedelta
 from typing import Optional, Any
-import redis
+import redis.asyncio as redis
 
 from ..config import get_settings
 from ..core.logging import get_logger
@@ -32,18 +32,17 @@ def get_redis_client() -> Optional[redis.Redis]:
         return None
     
     try:
+        # Use async Redis client
         _redis_client = redis.from_url(
             settings.redis_url,
             decode_responses=True,
             socket_timeout=5,
             socket_connect_timeout=5,
         )
-        # Test connection
-        _redis_client.ping()
-        logger.info("redis_connected")
+        logger.info("redis_client_created")
         return _redis_client
     except Exception as e:
-        logger.warning("redis_connection_failed", error=str(e))
+        logger.warning("redis_creation_failed", error=str(e))
         _redis_client = None
         return None
 
@@ -84,7 +83,7 @@ class CacheService:
         """Get value from cache."""
         if self._is_available():
             try:
-                return self.redis.get(key)
+                return await self.redis.get(key)
             except Exception as e:
                 logger.warning("cache_get_failed", key=key, error=str(e))
         
@@ -95,7 +94,7 @@ class CacheService:
         """Set value in cache with TTL."""
         if self._is_available():
             try:
-                self.redis.setex(key, ttl_seconds, value)
+                await self.redis.setex(key, ttl_seconds, value)
                 return True
             except Exception as e:
                 logger.warning("cache_set_failed", key=key, error=str(e))
@@ -108,7 +107,7 @@ class CacheService:
         """Delete key from cache."""
         if self._is_available():
             try:
-                self.redis.delete(key)
+                await self.redis.delete(key)
                 return True
             except Exception as e:
                 logger.warning("cache_delete_failed", key=key, error=str(e))
@@ -120,9 +119,9 @@ class CacheService:
         """Delete all keys matching pattern."""
         if self._is_available():
             try:
-                keys = self.redis.keys(pattern)
+                keys = await self.redis.keys(pattern)
                 if keys:
-                    return self.redis.delete(*keys)
+                    return await self.redis.delete(*keys)
             except Exception as e:
                 logger.warning("cache_delete_pattern_failed", error=str(e))
         return 0
@@ -202,8 +201,8 @@ class CacheService:
         
         if self._is_available():
             try:
-                self.redis.sadd(key, *item_ids)
-                self.redis.expire(key, self.SEEN_ITEMS_TTL)
+                await self.redis.sadd(key, *item_ids)
+                await self.redis.expire(key, self.SEEN_ITEMS_TTL)
                 return True
             except Exception as e:
                 logger.warning("cache_sadd_failed", error=str(e))
@@ -216,7 +215,7 @@ class CacheService:
         
         if self._is_available():
             try:
-                return self.redis.smembers(key) or set()
+                return await self.redis.smembers(key) or set()
             except Exception as e:
                 logger.warning("cache_smembers_failed", error=str(e))
         
@@ -228,7 +227,7 @@ class CacheService:
         
         if self._is_available():
             try:
-                return self.redis.sismember(key, item_id)
+                return await self.redis.sismember(key, item_id)
             except Exception as e:
                 logger.warning("cache_sismember_failed", error=str(e))
         
@@ -244,13 +243,14 @@ class CacheService:
             return {"status": "unavailable", "type": "memory"}
         
         try:
-            info = self.redis.info("stats")
+            info = await self.redis.info("stats")
+            memory = await self.redis.info("memory")
             return {
                 "status": "connected",
                 "type": "redis",
                 "hits": info.get("keyspace_hits", 0),
                 "misses": info.get("keyspace_misses", 0),
-                "memory_used": self.redis.info("memory").get("used_memory_human"),
+                "memory_used": memory.get("used_memory_human"),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
