@@ -1075,11 +1075,24 @@ class IngestionJob:
             # For now, just keep last 5000
             final_content = final_content[-5000:]
             
-        # Save locally
+        # Extract images for separate index
+        image_items = [
+            item for item in final_content
+            if item.get("contentType") == "image" and item.get("id")
+        ]
+
+        # Save master content locally
         try:
             master_path.write_text(json.dumps(final_content, indent=2, default=str))
             logger.info("master_content_saved_locally", count=len(final_content), new=new_items_count, upgraded=upgraded_count)
             print(f"[Ingestion] ✅ Saved {len(final_content)} items locally ({new_items_count} new, {upgraded_count} upgraded)")
+
+            # Save images index locally
+            images_path = indexes_dir / "images.json"
+            images_path.write_text(json.dumps(image_items, indent=2, default=str))
+            logger.info("images_index_saved_locally", count=len(image_items))
+            print(f"[Ingestion] ✅ Saved {len(image_items)} image items to images.json")
+
         except Exception as e:
             logger.error("local_save_failed", error=str(e))
 
@@ -1087,17 +1100,28 @@ class IngestionJob:
         try:
             from ..services.supabase_storage import get_supabase_storage
             storage = get_supabase_storage()
+
+            # Upload master content
             content_bytes = json.dumps(final_content, default=str).encode()
-            success = await storage.upload_file(
+            success_master = await storage.upload_file(
                 bucket="content",
                 filename="master_content.json",
                 content=content_bytes
             )
-            if success:
-                logger.info("master_content_synced_to_supabase")
-                print(f"[Ingestion] ☁️ Successfully synced master_content.json to Supabase")
+
+            # Upload images index
+            images_bytes = json.dumps(image_items, default=str).encode()
+            success_images = await storage.upload_file(
+                bucket="indexes",  # Different bucket for indices
+                filename="images.json",
+                content=images_bytes
+            )
+
+            if success_master and success_images:
+                logger.info("content_synced_to_supabase")
+                print(f"[Ingestion] ☁️ Successfully synced content and images to Supabase")
             else:
-                print(f"[Ingestion] ⚠️ Sync to Supabase failed")
+                print(f"[Ingestion] ⚠️ Sync to Supabase failed (Master: {success_master}, Images: {success_images})")
         except Exception as e:
             logger.error("supabase_sync_failed", error=str(e))
             print(f"[Ingestion] ❌ Sync error: {e}")

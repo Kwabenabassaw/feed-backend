@@ -164,66 +164,25 @@ class IndexPoolService:
         """
         Get image content IDs (for mixed feeds).
         
-        Filters master_content.json for items with contentType == 'image'.
-        Cached in memory to avoid repeated network fetches.
+        Loads from dedicated images.json index (cached).
         """
-        from pathlib import Path
-        import json
+        # Load from images.json using standard mechanism (cached automatically)
+        # Note: load_index returns List[IndexItem], so we extract IDs
+        # We treat "images" as a bucket name.
         
-        # Check cache for image_ids
-        # We reuse the _cache dict but with a special key "master_images"
-        # However, _cache stores List[IndexItem]. We need raw IDs here or generic dicts.
-        # But wait, IndexItem might not have contentType.
-        # Let's store raw IDs in a separate cache key "image_ids_list" in memory
-
-        cache_key = "image_ids_list"
-        if self._is_cache_valid(cache_key):
-            cached_ids = self._cache[cache_key] # This will be list of strings, type hint violation but works in python
-            import random
-            shuffled = cached_ids.copy()
-            random.shuffle(shuffled)
-            return shuffled[:limit]
-
-        data = None
+        # Since images.json contains full items but load_index parses to IndexItem,
+        # we need to ensure IndexItem is compatible or handle it manually if we need more data.
+        # IndexItem has 'id', which is all we need here.
         
-        # Try Supabase first (for production/Render)
-        if self.settings.supabase_url and self.settings.supabase_key:
-            try:
-                import httpx
-                url = f"{self.settings.supabase_url}/storage/v1/object/public/content/master_content.json"
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(url, timeout=10.0)
-                    if response.status_code == 200:
-                        data = response.json()
-            except Exception as e:
-                logger.debug("supabase_image_ids_failed", error=str(e))
+        items = await self.load_index("images")
         
-        # Fall back to local file
-        if data is None:
-            local_path = Path("indexes") / "master_content.json"
-            if local_path.exists():
-                try:
-                    data = json.loads(local_path.read_text())
-                except Exception as e:
-                    logger.debug("local_image_ids_failed", error=str(e))
-        
-        if data is None:
+        if not items:
             return []
-        
-        # Filter for image content
-        image_ids = [
-            item.get("id") 
-            for item in data 
-            if item.get("contentType") == "image" and item.get("id")
-        ]
-        
-        # Update cache
-        self._cache[cache_key] = image_ids
-        self._cache_timestamps[cache_key] = time.time()
+
+        image_ids = [item.id for item in items]
 
         # Shuffle to add variety
         import random
-        shuffled = image_ids.copy()
-        random.shuffle(shuffled)
+        random.shuffle(image_ids)
         
-        return shuffled[:limit]
+        return image_ids[:limit]
