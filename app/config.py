@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Supabase
     supabase_url: str = ""
     supabase_key: str = ""
+    supabase_service_key: str = ""  # Service role key for auth sync
     
     # Redis
     redis_url: str = "redis://localhost:6379"
