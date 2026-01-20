@@ -126,41 +126,70 @@ async def sync_user_title(
         logger.error("supabase_not_configured")
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # Build the record
+    # Build the record dynamically based on what was sent
+    # This allows partial updates (e.g. update rating without clearing status)
     now = datetime.now(timezone.utc).isoformat()
-    
     record = {
         "user_id": user_id,
         "title_id": body.title_id,
         "media_type": body.media_type.value,
         "title": body.title,
-        "poster_path": body.poster_path,
-        "status": body.status.value if body.status else None,
-        "is_favorite": body.is_favorite,
-        "rating": body.rating,
-        "source": body.source.value if body.source else None,
         "synced_at": now,
     }
     
-    # CORRECTION #3: Status removal semantics
-    # When status is NULL, status_changed_at must also be NULL
-    if body.status:
-        record["status_changed_at"] = now
-    else:
-        record["status_changed_at"] = None
+    # Only update optional fields if they were explicitly sent
+    fields_set = body.__fields_set__
     
-    # Set rated_at if rating provided
-    if body.rating:
-        record["rated_at"] = now
-    
-    # Set favorited_at if favorite
-    if body.is_favorite:
-        record["favorited_at"] = now
-    else:
-        record["favorited_at"] = None
-    
-    # CORRECTION #2: added_at is required
-    # For sync, we use current time; migration script will compute earliest
+    if "poster_path" in fields_set:
+        record["poster_path"] = body.poster_path
+
+    if "source" in fields_set:
+        record["source"] = body.source.value if body.source else None
+        
+    # LOGIC: Status
+    if "status" in fields_set:
+        record["status"] = body.status.value if body.status else None
+        # CORRECTION #3: Status removal semantics
+        if body.status:
+            record["status_changed_at"] = now
+        else:
+            record["status_changed_at"] = None
+            
+    # LOGIC: Rating
+    if "rating" in fields_set:
+        record["rating"] = body.rating
+        if body.rating:
+            record["rated_at"] = now
+            
+    # LOGIC: Favorite
+    if "is_favorite" in fields_set:
+        record["is_favorite"] = body.is_favorite
+        if body.is_favorite:
+            record["favorited_at"] = now
+        else:
+            record["favorited_at"] = None
+            
+    # CORRECTION #2: added_at
+    # We only set added_at if we are creating new (handled by Supabase usually)
+    # OR if this is a fresh sync.
+    # But wait, UPSERT with merge will overwrite added_at if we send it.
+    # We should ALWAYS send added_at for new records.
+    # For existing records, we want to KEEP existing added_at.
+    # PostgREST doesn't support "insert_only" columns in UPSERT easily.
+    # BUT, if we use "resolution=merge-duplicates", it merges.
+    # If we want to preserve added_at, we should NOT send it if record exists.
+    # But we don't know if it exists.
+    # Workaround: Send added_at only if status is NOT NULL (implies adding to list)
+    # AND added_at is not in DB.
+    # Actually, worst case: we overwrite added_at with NOW().
+    # Ideally we want `added_at = COALESCE(excluded.added_at, user_titles.added_at)` logic.
+    # PostgREST doesn't let us customize ON CONFLICT clause easily.
+    # However, if we omit 'added_at' from JSON, it won't update it on merge.
+    # But then new records will fail NOT NULL constraint if default is not set.
+    # DB default is NOT SET?
+    # Migration: added_at TIMESTAMPTZ NOT NULL
+    # Fix: We must send added_at. If it overwrites, so be it (last sync wins).
+    # OR: accepted trade-off for now.
     record["added_at"] = now
     
     try:
