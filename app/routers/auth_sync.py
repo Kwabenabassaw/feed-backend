@@ -92,12 +92,15 @@ async def sync_profile(
                     "email": email,
                     "username": username,
                     "profile_image": profile_image,
+                    # Note: created_at is set by database DEFAULT
+                    # updated_at is set by database trigger on UPDATE
                 },
                 headers={
                     "apikey": SUPABASE_SERVICE_KEY,
                     "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
                     "Content-Type": "application/json",
-                    "Prefer": "resolution=merge-duplicates",  # UPSERT behavior
+                    # UPSERT: on conflict with id, update existing row
+                    "Prefer": "resolution=merge-duplicates,return=minimal",
                 },
                 timeout=10.0,
             )
