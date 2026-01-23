@@ -12,8 +12,8 @@ from ..core.logging import get_logger
 logger = get_logger(__name__)
 settings = get_settings()
 
-SUPABASE_URL = settings.SUPABASE_URL
-SUPABASE_SERVICE_KEY = settings.SUPABASE_SERVICE_KEY
+SUPABASE_URL = settings.supabase_url
+SUPABASE_SERVICE_KEY = settings.supabase_service_key
 
 class PreferenceService:
     def __init__(self):
