@@ -14,7 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from .config import get_settings
 from .core.logging import setup_logging, get_logger
 from .core.exceptions import register_exception_handlers
-from .routers import feed_router, analytics_router, search_router, auth_sync_router, social_router, user_titles_router
+from .routers import feed_router, analytics_router, search_router, auth_sync_router, social_router, user_titles_router, preferences_router, community_router
 from .routers.scheduler import router as scheduler_router
 from .services.scheduler import get_scheduler_service
 
@@ -142,6 +142,8 @@ app.include_router(search_router)
 app.include_router(auth_sync_router)
 app.include_router(social_router)
 app.include_router(user_titles_router)
+app.include_router(preferences_router)
+app.include_router(community_router)
 
 
 @app.get("/")

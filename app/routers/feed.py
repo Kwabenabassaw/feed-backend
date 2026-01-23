@@ -103,6 +103,74 @@ async def get_feed(
     )
     
     try:
+        # --- SPECIAL PATH: Activity Feed (Following) ---
+        if feed_type == FeedType.FOLLOWING:
+            from ..services.social_service import get_social_service
+            social_service = get_social_service()
+            
+            # Parse cursor (timestamp)
+            cursor_dt = None
+            if cursor:
+                try:
+                    cursor_dt = datetime.fromisoformat(cursor)
+                except ValueError:
+                    logger.warning("invalid_cursor_format", cursor=cursor)
+            
+            # Fetch from Supabase RPC
+            activity_items = await social_service.get_activity_feed(
+                user_id=current_user["uid"],
+                limit=limit,
+                cursor=cursor_dt
+            )
+            
+            # Transform to Feed Response format
+            feed_items = []
+            last_activity_at = None
+            
+            for item in activity_items:
+                # Map RPC result to API model
+                feed_items.append({
+                    "id": item.get("title_id"),
+                    "mediaType": item.get("media_type"),
+                    "title": item.get("title"),
+                    "posterPath": item.get("poster_path"),
+                    "rating": item.get("rating"),
+                    "isFavorite": item.get("is_favorite"),
+                    "status": item.get("status"),
+                    "timestamp": item.get("activity_at"),
+                    # Social Context
+                    "friend": {
+                        "uid": item.get("friend_user_id"),
+                        "username": item.get("friend_username"),
+                        "avatarUrl": item.get("friend_avatar_url"),
+                    },
+                    "type": "social_activity" 
+                })
+                last_activity_at = item.get("activity_at")
+
+            # Determine next cursor
+            next_cursor = None
+            if len(activity_items) >= limit and last_activity_at:
+                next_cursor = last_activity_at
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            response = FeedResponse(
+                feed=feed_items,
+                meta=FeedMeta(
+                    feedType=feed_type,
+                    page=1,
+                    limit=limit,
+                    itemCount=len(feed_items),
+                    hasMore=len(feed_items) >= limit,
+                    generatedAt=datetime.utcnow(),
+                    latencyMs=latency_ms,
+                    cursor=next_cursor
+                )
+            )
+            return response
+
+        # --- STANDARD PATH: For You / Trending ---
         # Step 1: Load user context
         user_context = await load_user_context(current_user)
         
