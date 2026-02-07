@@ -127,7 +127,91 @@ class FeedGenerator:
         
         # Fallback to community hot if Firestore query fails
         return await self.index_pool.get_community_hot_ids(limit=buffer)
-    
+
+    async def _get_from_plan(self, session_id: str, offset: int, limit: int) -> List[str]:
+        """Fetch IDs from cached feed plan in Redis."""
+        if not self.redis:
+            return []
+        key = f"feed_plan:{session_id}"
+        # LRANGE is inclusive
+        return await self.redis.lrange(key, offset, offset + limit - 1)
+
+    async def _extend_plan(self, session_id: str, items: List[str]):
+        """Append items to the feed plan."""
+        if not self.redis or not items:
+            return
+        key = f"feed_plan:{session_id}"
+        await self.redis.rpush(key, *items)
+        await self.redis.expire(key, self.settings.session_ttl_seconds)
+
+    async def _generate_batch(
+        self,
+        user_context: UserContext,
+        count: int,
+        feed_type: str,
+        session_seen: Set[str]
+    ) -> List[str]:
+        """
+        Generate a new batch of candidate items.
+        Applies mixing logic, deduplication, and shuffling.
+        """
+        user_seen = set(user_context.seen_ids)
+        selected_ids = []
+
+        if feed_type == "trending":
+            # Trending Logic
+            buffer_limit = count * 4
+            candidates = await self._get_trending_candidates(buffer_limit)
+            filtered = self.dedup.filter_seen(candidates, user_seen, session_seen)
+            selected_ids = filtered[:count]
+        else:
+            # Mixed Logic (For You)
+            t_count, p_count, f_count = self._calculate_bucket_sizes(count)
+            
+            # Fetch candidates
+            trending_ids = await self._get_trending_candidates(t_count * 2)
+            personalized_ids = await self._get_personalized_candidates(user_context, p_count * 2)
+            friend_ids = await self._get_friend_candidates(user_context, f_count * 2)
+            
+            # Filter seen
+            trending_filtered = self.dedup.filter_seen(trending_ids, user_seen, session_seen)
+            personalized_filtered = self.dedup.filter_seen(personalized_ids, user_seen, session_seen)
+            friend_filtered = self.dedup.filter_seen(friend_ids, user_seen, session_seen)
+            
+            # Collect unique IDs
+            collected_set = set()
+            collected_ids = []
+            
+            def add_unique(items, limit_cnt):
+                added = 0
+                for item in items:
+                    if added >= limit_cnt: break
+                    if item not in collected_set:
+                        collected_ids.append(item)
+                        collected_set.add(item)
+                        added += 1
+            
+            add_unique(trending_filtered, t_count)
+            add_unique(personalized_filtered, p_count)
+            add_unique(friend_filtered, f_count)
+            
+            # Backfill
+            if len(collected_ids) < count:
+                remaining = count - len(collected_ids)
+                avail = [i for i in trending_filtered if i not in collected_set]
+                for i in avail[:remaining]:
+                    collected_ids.append(i)
+                    collected_set.add(i)
+            
+            # Shuffle
+            selected_ids = self._tiered_shuffle(collected_ids)
+            
+        # Mix Images
+        image_ids = await self.index_pool.get_image_ids(limit=max(10, count // 3))
+        final_batch = self._mix_images_into_feed(selected_ids, image_ids)
+        
+        return final_batch
+
     async def generate(
         self,
         user_context: UserContext,
@@ -136,126 +220,64 @@ class FeedGenerator:
         feed_type: str = "for_you"
     ) -> Tuple[List[str], str]:
         """
-        Generate feed item IDs.
-        
-        Args:
-            user_context: User's preferences and history
-            limit: Number of items to return
-            cursor: Pagination cursor (contains session_id)
-            feed_type: "for_you" (mixed) or "trending" (global popular)
-            
-        Returns:
-            Tuple of (selected_ids, next_cursor)
+        Generate feed item IDs using Redis Feed Plan.
         """
-        # Parse cursor for session-based deduplication
+        # 1. Parse Cursor
         if cursor:
             session_id, offset = self.dedup.decode_cursor(cursor)
         else:
             session_id = self.dedup.generate_session_id()
             offset = 0
-        
-        # Get session-seen IDs (items already sent in this session)
-        session_seen = await self.dedup.get_session_seen_ids(session_id)
-        
-        # Combine with user's long-term seen history
-        user_seen = set(user_context.seen_ids)
-        
-        # --- PATH A: Trending Feed ---
-        if feed_type == "trending":
-            # 100% Trending items
-            logger.info("generating_trending_feed", uid=user_context.uid, limit=limit)
-             
-            # Fetch more to allow for filtering
-            buffer_limit = limit * 4
-            candidates = await self._get_trending_candidates(buffer_limit)
-            
-            # Filter seen items
-            filtered = self.dedup.filter_seen(candidates, user_seen, session_seen)
-            
-            # Take top N (no shuffle for pure trending, or light shuffle?)
-            # Let's do light shuffle to not show exact same order every refresh if refreshed quickly
-            # But mostly preserve order
-            selected_ids = filtered[:limit]
-            
-            # Skip personalized/friend logic
-            
-        # --- PATH B: For You (Mixed) ---
-        else:
-            # Calculate bucket sizes
-            t_count, p_count, f_count = self._calculate_bucket_sizes(limit)
-            
-            logger.info(
-                "generating_feed",
-                uid=user_context.uid,
-                limit=limit,
-                trending=t_count,
-                personalized=p_count,
-                friend=f_count,
-                is_cold_start=user_context.is_cold_start
-            )
-            
-            # Fetch candidates from each bucket
-            trending_ids = await self._get_trending_candidates(t_count)
-            personalized_ids = await self._get_personalized_candidates(user_context, p_count)
-            friend_ids = await self._get_friend_candidates(user_context, f_count)
-            
-            # Filter seen items from each bucket
-            trending_filtered = self.dedup.filter_seen(trending_ids, user_seen, session_seen)
-            personalized_filtered = self.dedup.filter_seen(personalized_ids, user_seen, session_seen)
-            friend_filtered = self.dedup.filter_seen(friend_ids, user_seen, session_seen)
-            
-            # Collect seen IDs to avoid cross-bucket duplicates
-            collected_ids: List[str] = []
-            collected_set: Set[str] = set()
-            
-            # Take from each bucket up to their quota
-            for id in trending_filtered[:t_count]:
-                if id not in collected_set:
-                    collected_ids.append(id)
-                    collected_set.add(id)
-            
-            for id in personalized_filtered[:p_count]:
-                if id not in collected_set:
-                    collected_ids.append(id)
-                    collected_set.add(id)
-            
-            for id in friend_filtered[:f_count]:
-                if id not in collected_set:
-                    collected_ids.append(id)
-                    collected_set.add(id)
-            
-            # If we don't have enough, backfill from trending
-            if len(collected_ids) < limit:
-                remaining = limit - len(collected_ids)
-                available = [id for id in trending_filtered if id not in collected_set]
-                for id in available[:remaining]:
-                    collected_ids.append(id)
-                    collected_set.add(id)
-            
-            # Light shuffle to add variety (preserve top items)
-            selected_ids = self._tiered_shuffle(collected_ids)[:limit]
 
-        # --- Common Final Steps ---
+        # 2. Try to fetch from plan (Fast Path)
+        cached_items = await self._get_from_plan(session_id, offset, limit)
         
-        # Fetch image IDs and mix into feed (3 videos : 1 image ratio)
-        image_ids = await self.index_pool.get_image_ids(limit=50)
-        selected = self._mix_images_into_feed(selected_ids, image_ids)
+        if len(cached_items) >= limit:
+            # We have enough items in the plan
+            next_cursor = self.dedup.encode_cursor(session_id, offset + limit)
+            logger.info("feed_plan_hit", uid=user_context.uid, offset=offset)
+            return cached_items, next_cursor
         
-        # Mark these IDs as sent in session
-        await self.dedup.mark_ids_sent(session_id, selected)
-        
-        # Generate next cursor
-        next_cursor = self.dedup.encode_cursor(session_id, offset + limit)
+        # 3. Generate New Batch (Slow Path)
+        # We need more items.
+
+        # Get what we've already seen in this session (to avoid dupes in new batch)
+        session_seen = await self.dedup.get_session_seen_ids(session_id)
+
+        # Generate ahead (batch size)
+        batch_size = max(limit * 3, 50)
         
         logger.info(
-            "feed_generated",
+            "generating_feed_batch",
             uid=user_context.uid,
-            count=len(selected),
-            feed_type=feed_type,
-            session_id=session_id
+            batch_size=batch_size,
+            feed_type=feed_type
+        )
+
+        new_items = await self._generate_batch(
+            user_context,
+            batch_size,
+            feed_type,
+            session_seen
         )
         
-        return selected, next_cursor
+        # 4. Update Plan
+        if new_items:
+            await self._extend_plan(session_id, new_items)
+            await self.dedup.mark_ids_sent(session_id, new_items)
+
+        # 5. Fetch Final Slice
+        if self.redis:
+            # Fetch again to get the contiguous slice including new items
+            final_slice = await self._get_from_plan(session_id, offset, limit)
+        else:
+            # Fallback if Redis is unavailable (e.g. tests)
+            # Since we just generated a batch, return the requested slice from it
+            final_slice = new_items[:limit]
+
+        next_cursor = self.dedup.encode_cursor(session_id, offset + len(final_slice))
+
+        return final_slice, next_cursor
     
     def _tiered_shuffle(self, items: List[str]) -> List[str]:
         """
@@ -297,13 +319,6 @@ class FeedGenerator:
         Mix image IDs into video feed at 3:1 ratio.
         
         Pattern: video, video, video, IMAGE, video, video, video, IMAGE...
-        
-        Args:
-            video_ids: List of video content IDs
-            image_ids: List of image content IDs
-            
-        Returns:
-            Mixed list of IDs with images inserted every 3 videos
         """
         if not image_ids:
             return video_ids

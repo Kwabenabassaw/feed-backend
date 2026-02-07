@@ -27,11 +27,16 @@ class DeduplicationService:
     
     BLOOM_THRESHOLD = 5000  # Use Bloom filter above this count
     
-    def __init__(self, redis_client=None):
+    def __init__(self, redis_client):
         self.settings = get_settings()
         self.redis = redis_client
-        self._local_sessions: dict = {}  # Fallback if no Redis
-    
+
+        if not self.redis:
+            # Critical architectural requirement: Redis must be available
+            logger.error("redis_required_for_deduplication")
+            # In production, we might want to raise an exception here
+            # raise RuntimeError("Redis client is required for DeduplicationService")
+
     # =========================================================================
     # Session-Based Deduplication (Short-term, per-pagination)
     # =========================================================================
@@ -76,9 +81,10 @@ class DeduplicationService:
                 return set(ids) if ids else set()
             except Exception as e:
                 logger.warning("redis_get_failed", error=str(e))
+        else:
+            logger.error("redis_unavailable_for_session_seen")
         
-        # Fallback to local storage
-        return self._local_sessions.get(session_id, set())
+        return set()
     
     async def mark_ids_sent(self, session_id: str, ids: List[str]):
         """
@@ -98,11 +104,8 @@ class DeduplicationService:
                 return
             except Exception as e:
                 logger.warning("redis_set_failed", error=str(e))
-        
-        # Fallback to local storage
-        if session_id not in self._local_sessions:
-            self._local_sessions[session_id] = set()
-        self._local_sessions[session_id].update(ids)
+        else:
+            logger.error("redis_unavailable_for_mark_sent")
     
     # =========================================================================
     # User History Deduplication (Long-term)
