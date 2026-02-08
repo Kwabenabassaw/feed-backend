@@ -109,19 +109,29 @@ class Hydrator:
         
         for item_id in item_ids:
             if item_id in content_dict:
-                item_data = content_dict[item_id]
+                item_data = content_dict[item_id].copy()  # Copy to avoid mutating cache
                 
                 # Add source if provided
                 if source_tags and item_id in source_tags:
                     item_data["source"] = source_tags[item_id]
                 
-                # Ensure required fields have defaults
+                # Ensure required fields have defaults (use camelCase for frontend)
                 item_data.setdefault("youtubeKey", item_id)
                 item_data.setdefault("title", "Unknown Title")
                 item_data.setdefault("contentType", "trailer")
+                item_data.setdefault("videoType", item_data.get("contentType", "trailer"))
                 item_data.setdefault("genres", [])
+                item_data.setdefault("source", "trending")
                 
-                hydrated.append(item_data)
+                # Validate by converting through model (ensures consistent field names)
+                try:
+                    from ..models.feed_item import FeedItem
+                    validated = FeedItem(**item_data)
+                    hydrated.append(validated.model_dump(by_alias=True))
+                except Exception as e:
+                    logger.warning("hydration_validation_failed", item_id=item_id, error=str(e))
+                    # Fall back to raw dict if validation fails
+                    hydrated.append(item_data)
             else:
                 missing_ids.append(item_id)
         
@@ -142,9 +152,9 @@ class Hydrator:
                     "youtubeKey": None if is_image else item_id,
                     "title": "Image" if is_image else "Video",
                     "contentType": "image" if is_image else "trailer",
+                    "videoType": "image" if is_image else "trailer",
                     "source": source_tags.get(item_id, "unknown") if source_tags else "unknown",
                     "genres": [],
-                    "isMissing": True,  # Flag for debugging
                 })
         
         logger.info(
@@ -155,6 +165,7 @@ class Hydrator:
         )
         
         return hydrated
+
     
     async def hydrate_single(self, item_id: str) -> Optional[Dict[str, Any]]:
         """Hydrate a single item by ID."""
