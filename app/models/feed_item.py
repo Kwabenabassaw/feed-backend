@@ -21,12 +21,22 @@ class ContentType(str, Enum):
     FEATURETTE = "featurette"
     SHORT = "short"
     COMMUNITY = "community"
+    IMAGE = "image"
 
 
 class VideoType(str, Enum):
-    """Video source type."""
+    """Video source type — includes content subtypes produced by the ingestion pipeline."""
     YOUTUBE = "youtube"
     EXTERNAL = "external"
+    TRAILER = "trailer"
+    TEASER = "teaser"
+    CLIP = "clip"
+    BTS = "bts"
+    INTERVIEW = "interview"
+    FEATURETTE = "featurette"
+    SHORT = "short"
+    IMAGE = "image"
+    BEHIND_THE_SCENES = "behind_the_scenes"
 
 
 class IndexItem(BaseModel):
@@ -63,7 +73,7 @@ class FeedItem(BaseModel):
     backdrop_path: Optional[str] = Field(None, alias="backdropPath")
     
     # Video data
-    youtube_key: str = Field(..., alias="youtubeKey", description="YouTube video ID")
+    youtube_key: Optional[str] = Field(None, alias="youtubeKey", description="YouTube video ID")
     video_type: VideoType = Field(default=VideoType.YOUTUBE, alias="videoType")
     content_type: ContentType = Field(default=ContentType.TRAILER, alias="contentType")
     duration: Optional[int] = Field(None, description="Video duration in seconds")
