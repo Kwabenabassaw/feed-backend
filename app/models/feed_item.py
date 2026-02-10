@@ -77,6 +77,13 @@ class FeedItem(BaseModel):
     video_type: VideoType = Field(default=VideoType.YOUTUBE, alias="videoType")
     content_type: ContentType = Field(default=ContentType.TRAILER, alias="contentType")
     duration: Optional[int] = Field(None, description="Video duration in seconds")
+    video_name: Optional[str] = Field(None, alias="videoName", description="Video name")
+    
+    # Image / thumbnail data (required for image feed items)
+    image_url: Optional[str] = Field(None, alias="imageUrl", description="Full image URL for image content")
+    thumbnail_url: Optional[str] = Field(None, alias="thumbnailUrl", description="Thumbnail URL")
+    poster: Optional[str] = Field(None, description="Full poster URL")
+    channel_title: Optional[str] = Field(None, alias="channelTitle", description="Channel/creator name")
     
     # Metadata
     source: str = Field(default="trending", description="trending, genre, friend, community")
@@ -85,6 +92,7 @@ class FeedItem(BaseModel):
     popularity: float = Field(default=0.0)
     vote_average: Optional[float] = Field(None, alias="voteAverage")
     release_date: Optional[str] = Field(None, alias="releaseDate")
+    feed_type: Optional[str] = Field(None, alias="feedType", description="trending, following, for_you")
     
     # Tracking
     score: float = Field(default=0.0, description="Ranking score (internal)")
@@ -106,8 +114,11 @@ class ContentDictionary(BaseModel):
     overview: Optional[str] = None
     poster_path: Optional[str] = Field(None, alias="posterPath")
     backdrop_path: Optional[str] = Field(None, alias="backdropPath")
-    youtube_key: str = Field(..., alias="youtubeKey")
+    youtube_key: Optional[str] = Field(None, alias="youtubeKey")
     video_type: str = Field(default="trailer", alias="videoType")
+    content_type: Optional[str] = Field(None, alias="contentType")
+    image_url: Optional[str] = Field(None, alias="imageUrl")
+    poster: Optional[str] = Field(None)
     genres: List[str] = Field(default_factory=list)
     popularity: float = Field(default=0.0)
     vote_average: Optional[float] = Field(None, alias="voteAverage")
