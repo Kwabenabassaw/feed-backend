@@ -102,6 +102,25 @@ async def trigger_indexer(admin: dict = Depends(verify_admin_access)):
     }
 
 
+@router.post("/trigger/episode-notifier")
+async def trigger_episode_notifier(admin: dict = Depends(verify_admin_access)):
+    """
+    Manually trigger the episode notifier job.
+    
+    Sends a silent FCM 'EPISODE_CHECK' to all devices.
+    """
+    logger.info("manual_episode_notifier_trigger", admin=admin)
+    
+    service = get_scheduler_service()
+    await service.trigger_episode_notifier_now()
+    
+    return {
+        "success": True,
+        "message": "Episode notifier triggered",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
 @router.post("/trigger/upload")
 async def trigger_upload(admin: dict = Depends(verify_admin_access)):
     """

@@ -51,6 +51,7 @@ class SchedulerService:
         self.scheduler = get_scheduler()
         self._ingestion_job_id = "content_ingestion"
         self._indexer_job_id = "index_generation"
+        self._episode_notifier_job_id = "episode_notifier"
     
     async def _run_ingestion(self):
         """Execute the ingestion job."""
@@ -106,6 +107,24 @@ class SchedulerService:
         except Exception as e:
             logger.error("scheduler_job_failed", job="supabase_upload", error=str(e))
             print(f"[CRON JOB] ❌ SUPABASE UPLOAD FAILED: {e}\n")
+
+    async def _run_episode_notifier(self):
+        """Execute the episode notifier job."""
+        from ..jobs.episode_notifier import run_episode_notifier_job
+        
+        print("\n" + "="*60)
+        print("[CRON JOB] 🔄 EPISODE NOTIFIER JOB STARTED")
+        print(f"[CRON JOB] Time: {datetime.utcnow().isoformat()}")
+        print("="*60)
+        
+        logger.info("scheduler_job_started", job="episode_notifier")
+        try:
+            await run_episode_notifier_job()
+            logger.info("scheduler_job_completed", job="episode_notifier")
+            print("[CRON JOB] ✅ EPISODE NOTIFIER JOB COMPLETED\n")
+        except Exception as e:
+            logger.error("scheduler_job_failed", job="episode_notifier", error=str(e))
+            print(f"[CRON JOB] ❌ EPISODE NOTIFIER JOB FAILED: {e}\n")
     
     def setup_jobs(self):
         """Configure and add all scheduled jobs."""
@@ -129,11 +148,22 @@ class SchedulerService:
             replace_existing=True,
             max_instances=1,
         )
+
+        # Episode Notifier: Every 12 hours at 09:00 and 21:00 UTC
+        self.scheduler.add_job(
+            self._run_episode_notifier,
+            trigger=CronTrigger(hour="9,21", minute="0"), # Run twice a day
+            id=self._episode_notifier_job_id,
+            name="Episode Notifier",
+            replace_existing=True,
+            max_instances=1,
+        )
         
         logger.info(
             "scheduler_jobs_configured",
             ingestion_schedule="every 30 min at :00/:30",
-            indexer_schedule="every 30 min at :15/:45"
+            indexer_schedule="every 30 min at :15/:45",
+            episode_notifier_schedule="every 12 hours at 09:00/21:00"
         )
     
     def start(self):
@@ -176,6 +206,11 @@ class SchedulerService:
         logger.info("manual_trigger", job="indexer")
         await self._run_indexer()
         await self._run_upload()
+
+    async def trigger_episode_notifier_now(self):
+        """Manually trigger episode notifier job."""
+        logger.info("manual_trigger", job="episode_notifier")
+        await self._run_episode_notifier()
 
 
 # Singleton instance
