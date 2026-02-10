@@ -183,7 +183,7 @@ async def get_feed(
         )
         
         # Step 4: Hydrate with full metadata
-        feed_items = await hydrator.hydrate(selected_ids)
+        feed_items = await hydrator.hydrate(selected_ids, feed_type=feed_type.value)
         
         # Calculate latency
         latency_ms = int((time.time() - start_time) * 1000)

@@ -87,7 +87,8 @@ class Hydrator:
     async def hydrate(
         self, 
         item_ids: List[str],
-        source_tags: Optional[Dict[str, str]] = None
+        source_tags: Optional[Dict[str, str]] = None,
+        feed_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Fetch full metadata for selected IDs.
@@ -95,6 +96,7 @@ class Hydrator:
         Args:
             item_ids: List of item IDs to hydrate
             source_tags: Optional dict mapping ID to source (trending/genre/friend)
+            feed_type: Optional feed type label (trending, for_you, following)
             
         Returns:
             List of fully populated feed items (as dicts for JSON serialization)
@@ -122,6 +124,14 @@ class Hydrator:
                 item_data.setdefault("videoType", item_data.get("contentType", "trailer"))
                 item_data.setdefault("genres", [])
                 item_data.setdefault("source", "trending")
+                
+                # Generate recommendation reason from source
+                if "reason" not in item_data or not item_data.get("reason"):
+                    item_data["reason"] = self._generate_reason(item_data.get("source", ""))
+                
+                # Set feedType if provided
+                if feed_type:
+                    item_data["feedType"] = feed_type
                 
                 # Validate by converting through model (ensures consistent field names)
                 try:
@@ -154,6 +164,8 @@ class Hydrator:
                     "contentType": "image" if is_image else "trailer",
                     "videoType": "image" if is_image else "trailer",
                     "source": source_tags.get(item_id, "unknown") if source_tags else "unknown",
+                    "reason": "Photo" if is_image else "Recommended for you",
+                    "feedType": feed_type,
                     "genres": [],
                 })
         
@@ -165,6 +177,29 @@ class Hydrator:
         )
         
         return hydrated
+    
+    @staticmethod
+    def _generate_reason(source: str) -> str:
+        """Generate a human-readable recommendation reason from the item source."""
+        source_lower = source.lower() if source else ""
+        
+        if "trending" in source_lower:
+            return "Trending Now 🔥"
+        elif "released_today" in source_lower:
+            return "Just Released Today 🆕"
+        elif "kinocheck" in source_lower:
+            return "Fresh Trailer"
+        elif source_lower.startswith("discover_"):
+            genre = source_lower.replace("discover_", "").replace("_", " ").title()
+            return f"Discover: {genre}"
+        elif "image" in source_lower:
+            return "Movie Still 📸"
+        elif "friend" in source_lower:
+            return "Friends are watching 👀"
+        elif "community" in source_lower:
+            return "Community Pick"
+        else:
+            return "Recommended for you"
 
     
     async def hydrate_single(self, item_id: str) -> Optional[Dict[str, Any]]:
